@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage: docker-compose-ps [docker compose ps filter args]
+# Example: docker-compose-ps
+# Example: docker-compose-ps nginx
+# Example: docker-compose-ps compose-service-name
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/hihing-compose-lib"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  cat <<'EOF'
+usage: docker-compose-ps [docker compose ps filter args]
+
+Shows a simplified `docker compose ps` view:
+- Name
+- State (`Up ... (healthy)` style)
+- Ports
+
+Examples:
+  docker-compose-ps
+  docker-compose-ps nginx
+EOF
+  exit 0
+fi
+
+cd "${HIHING_ROOT}"
+docker compose -f "${BASE_COMPOSE}" ps --format json "$@" | python3 -c '
+import json
+import sys
+
+rows = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    rows.append(json.loads(line))
+
+headers = ("Name", "Command", "State", "Ports")
+if not rows:
+    print(f"{headers[0]:<28} {headers[2]:<14} {headers[3]}")
+    raise SystemExit(0)
+
+def value(row, key):
+    return str(row.get(key, "") or "")
+
+def width(index, key, minimum):
+    items = [len(value(row, key)) for row in rows]
+    return max([len(headers[index]), minimum, *items])
+
+name_w = width(0, "Name", 28)
+state_w = width(2, "Status", 14)
+
+print(f"{headers[0]:<{name_w}} {headers[2]:<{state_w}} {headers[3]}")
+print("-" * (name_w + state_w + len(headers[3]) + 2))
+
+for row in rows:
+    name = value(row, "Name")
+    status = value(row, "Status")
+    ports = value(row, "Ports")
+    print(f"{name:<{name_w}} {status:<{state_w}} {ports}")
+'

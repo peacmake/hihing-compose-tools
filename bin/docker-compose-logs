@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage: docker-compose-logs [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]
+# Example: docker-compose-logs
+# Example: docker-compose-logs platform
+# Example: docker-compose-logs compose-service-name
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/hihing-compose-lib"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage_compose_target "docker-compose-logs"
+  exit 0
+fi
+
+cd "${HIHING_ROOT}"
+if [ "$#" -eq 0 ]; then
+  docker compose -f "${BASE_COMPOSE}" logs --tail=50 -f
+else
+  mapfile -t services < <(resolve_services "$@")
+  docker compose -f "${BASE_COMPOSE}" logs --tail=50 -f "${services[@]}"
+fi

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage: docker-compose-up [dev|prod] [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]
+# Example: docker-compose-up dev
+# Example: docker-compose-up prod platform nginx
+# Example: docker-compose-up dev compose-service-name
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/hihing-compose-lib"
+
+mode="${1:-}"
+shift || true
+
+if [ "${mode}" = "-h" ] || [ "${mode}" = "--help" ]; then
+  usage_compose_mode
+  exit 0
+fi
+
+if [ -z "${mode}" ]; then
+  usage_compose_mode
+  exit 1
+fi
+
+mapfile -t compose_files < <(compose_files_for_mode "${mode}")
+
+ensure_node22_ffmpeg_image
+
+cd "${HIHING_ROOT}"
+if [ "$#" -eq 0 ]; then
+  docker compose \
+    -f "${compose_files[0]}" \
+    -f "${compose_files[1]}" \
+    up -d
+else
+  mapfile -t services < <(resolve_services "$@")
+  docker compose \
+    -f "${compose_files[0]}" \
+    -f "${compose_files[1]}" \
+    up -d "${services[@]}"
+fi
