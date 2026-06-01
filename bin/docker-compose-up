@@ -24,18 +24,17 @@ fi
 
 mapfile -t compose_files < <(compose_files_for_mode "${mode}")
 
-ensure_node22_ffmpeg_image
+ensure_node22_ffmpeg_image "${compose_files[@]}"
 
 cd "${HIHING_ROOT}"
+compose_cmd=(docker compose)
+for compose_file in "${compose_files[@]}"; do
+  compose_cmd+=(-f "${compose_file}")
+done
+
 if [ "$#" -eq 0 ]; then
-  docker compose \
-    -f "${compose_files[0]}" \
-    -f "${compose_files[1]}" \
-    up -d
+  "${compose_cmd[@]}" up -d
 else
   mapfile -t services < <(resolve_services "$@")
-  docker compose \
-    -f "${compose_files[0]}" \
-    -f "${compose_files[1]}" \
-    up -d "${services[@]}"
+  "${compose_cmd[@]}" up -d "${services[@]}"
 fi
