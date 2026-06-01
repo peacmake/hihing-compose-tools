@@ -15,6 +15,7 @@ usage: docker-compose-ps [docker compose ps filter args]
 
 Shows a simplified `docker compose ps` view:
 - Name
+- Service
 - State (`Up ... (healthy)` style)
 - Ports
 
@@ -37,9 +38,9 @@ for line in sys.stdin:
         continue
     rows.append(json.loads(line))
 
-headers = ("Name", "Command", "State", "Ports")
+headers = ("Name", "Service", "State", "Ports")
 if not rows:
-    print(f"{headers[0]:<28} {headers[2]:<14} {headers[3]}")
+    print(f"{headers[0]:<28} {headers[1]:<20} {headers[2]:<14} {headers[3]}")
     raise SystemExit(0)
 
 def value(row, key):
@@ -50,14 +51,16 @@ def width(index, key, minimum):
     return max([len(headers[index]), minimum, *items])
 
 name_w = width(0, "Name", 28)
+service_w = width(1, "Service", 20)
 state_w = width(2, "Status", 14)
 
-print(f"{headers[0]:<{name_w}} {headers[2]:<{state_w}} {headers[3]}")
-print("-" * (name_w + state_w + len(headers[3]) + 2))
+print(f"{headers[0]:<{name_w}} {headers[1]:<{service_w}} {headers[2]:<{state_w}} {headers[3]}")
+print("-" * (name_w + service_w + state_w + len(headers[3]) + 3))
 
 for row in rows:
     name = value(row, "Name")
+    service = value(row, "Service")
     status = value(row, "Status")
     ports = value(row, "Ports")
-    print(f"{name:<{name_w}} {status:<{state_w}} {ports}")
+    print(f"{name:<{name_w}} {service:<{service_w}} {status:<{state_w}} {ports}")
 '
