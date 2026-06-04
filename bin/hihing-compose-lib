@@ -34,6 +34,108 @@ usage_compose_target() {
   echo "usage: $1 [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]" >&2
 }
 
+list_all_compose_services() {
+  docker compose -f "${BASE_COMPOSE}" config --services
+}
+
+build_compose_cmd() {
+  local -a compose_files=("$@")
+  local -a cmd=(docker compose)
+  local compose_file
+  for compose_file in "${compose_files[@]}"; do
+    cmd+=(-f "${compose_file}")
+  done
+  printf '%s\n' "${cmd[@]}"
+}
+
+detect_service_compose_mode() {
+  local service="${1:-}"
+  local container_id config_files
+
+  container_id="$(docker compose -f "${BASE_COMPOSE}" ps -q "${service}" 2>/dev/null | head -n1 || true)"
+  if [ -z "${container_id}" ] && docker inspect "${service}" >/dev/null 2>&1; then
+    container_id="${service}"
+  fi
+  if [ -z "${container_id}" ]; then
+    echo unknown
+    return 0
+  fi
+
+  config_files="$(docker inspect "${container_id}" --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' 2>/dev/null || true)"
+  case "${config_files}" in
+    *docker-compose.prod.yml*) echo prod ;;
+    *docker-compose.dev.yml*) echo dev ;;
+    *) echo unknown ;;
+  esac
+}
+
+compose_up_services() {
+  local mode="${1:-}"
+  shift || true
+  local -a targets=("$@")
+  local -a compose_files=()
+  local -a compose_cmd=()
+  local -a services=()
+
+  mapfile -t compose_files < <(compose_files_for_mode "${mode}")
+  ensure_node22_ffmpeg_image "${compose_files[@]}"
+
+  mapfile -t compose_cmd < <(build_compose_cmd "${compose_files[@]}")
+
+  if [ "${#targets[@]}" -eq 0 ]; then
+    "${compose_cmd[@]}" up -d --force-recreate
+    return 0
+  fi
+
+  mapfile -t services < <(resolve_services "${targets[@]}")
+  "${compose_cmd[@]}" up -d --force-recreate "${services[@]}"
+}
+
+recreate_base_services() {
+  local -a services=("$@")
+  docker compose -f "${BASE_COMPOSE}" up -d --force-recreate "${services[@]}"
+}
+
+recreate_services_with_mode_detection() {
+  local -a targets=("$@")
+  local -a services=()
+  local -a dev_services=()
+  local -a prod_services=()
+  local -a base_services=()
+  local service mode
+
+  if [ "${#targets[@]}" -eq 0 ]; then
+    mapfile -t services < <(list_all_compose_services)
+  else
+    mapfile -t services < <(resolve_services "${targets[@]}")
+  fi
+
+  if [ "${#services[@]}" -eq 0 ]; then
+    echo "재생성할 서비스가 없습니다." >&2
+    return 1
+  fi
+
+  for service in "${services[@]}"; do
+    mode="$(detect_service_compose_mode "${service}")"
+    case "${mode}" in
+      dev) dev_services+=("${service}") ;;
+      prod) prod_services+=("${service}") ;;
+      *) base_services+=("${service}") ;;
+    esac
+  done
+
+  if [ "${#dev_services[@]}" -gt 0 ]; then
+    compose_up_services dev "${dev_services[@]}"
+  fi
+  if [ "${#prod_services[@]}" -gt 0 ]; then
+    compose_up_services prod "${prod_services[@]}"
+  fi
+  if [ "${#base_services[@]}" -gt 0 ]; then
+    echo "note: ${base_services[*]} — dev/prod 자동 감지 불가, base compose 로 재생성합니다. 최초 기동·모드 전환은 docker-compose-up dev|prod ... 를 사용하세요." >&2
+    recreate_base_services "${base_services[@]}"
+  fi
+}
+
 compose_files_for_mode() {
   local mode="${1:-}"
   local override=""

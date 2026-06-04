@@ -3,8 +3,12 @@ set -euo pipefail
 
 # Usage: docker-compose-restart [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]
 # Example: docker-compose-restart
-# Example: docker-compose-restart nginx
-# Example: docker-compose-restart compose-service-name
+# Example: docker-compose-restart platform
+# Example: docker-compose-restart hihing-i-bff-1
+#
+# Uses `up --force-recreate` instead of `restart` so .env changes are applied.
+# dev/prod is always auto-detected from running container compose labels.
+# prod: reruns build+start command. dev: reloads env; code hot-reload is unchanged.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/hihing-compose-lib"
@@ -15,9 +19,4 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 fi
 
 cd "${HIHING_ROOT}"
-if [ "$#" -eq 0 ]; then
-  docker compose -f "${BASE_COMPOSE}" restart
-else
-  mapfile -t services < <(resolve_services "$@")
-  docker compose -f "${BASE_COMPOSE}" restart "${services[@]}"
-fi
+recreate_services_with_mode_detection "$@"
