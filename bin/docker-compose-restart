@@ -19,5 +19,5 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
-cd "${HIHING_ROOT}"
+cd "${COMPOSE_ROOT}"
 recreate_services_with_mode_detection "$@"

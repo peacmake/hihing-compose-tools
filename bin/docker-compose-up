@@ -55,7 +55,7 @@ done
 
 export HIHING_COMPOSE_LOG_LEVEL="${log_level}"
 
-cd "${HIHING_ROOT}"
+cd "${COMPOSE_ROOT}"
 if [ "${#targets[@]}" -eq 0 ]; then
   compose_up_services "${mode}"
 else

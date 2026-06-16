@@ -14,7 +14,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
-cd "${HIHING_ROOT}"
+cd "${COMPOSE_ROOT}"
 if [ "$#" -eq 0 ]; then
   docker compose -f "${BASE_COMPOSE}" logs --tail=50 -f
 else

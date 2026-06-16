@@ -6,25 +6,25 @@ set -euo pipefail
 # (for example `/usr/local/bin`) so `source "${SCRIPT_DIR}/hihing-compose-lib"`
 # keeps working after deployment.
 
-detect_hihing_root() {
-  if [ -n "${HIHING_ROOT:-}" ] && [ -f "${HIHING_ROOT}/docker-compose.yml" ]; then
-    printf '%s\n' "${HIHING_ROOT}"
-    return 0
-  fi
+detect_compose_root() {
+  local dir="${PWD}"
 
-  if [ -f "${PWD}/docker-compose.yml" ]; then
-    printf '%s\n' "${PWD}"
-    return 0
-  fi
+  while [ -n "${dir}" ] && [ "${dir}" != "/" ]; do
+    if [ -f "${dir}/docker-compose.yml" ]; then
+      printf '%s\n' "${dir}"
+      return 0
+    fi
+    dir="$(dirname "${dir}")"
+  done
 
-  echo "docker-compose.yml 이 있는 프로젝트 루트에서 실행하세요. 필요하면 HIHING_ROOT=/path/to/root 를 지정하세요." >&2
+  echo "docker-compose.yml 이 있는 폴더(또는 그 하위)에서 실행하세요." >&2
   return 1
 }
 
-HIHING_ROOT="$(detect_hihing_root)"
-BASE_COMPOSE="${HIHING_ROOT}/docker-compose.yml"
-DEV_COMPOSE="${HIHING_ROOT}/docker-compose.dev.yml"
-PROD_COMPOSE="${HIHING_ROOT}/docker-compose.prod.yml"
+COMPOSE_ROOT="$(detect_compose_root)"
+BASE_COMPOSE="${COMPOSE_ROOT}/docker-compose.yml"
+DEV_COMPOSE="${COMPOSE_ROOT}/docker-compose.dev.yml"
+PROD_COMPOSE="${COMPOSE_ROOT}/docker-compose.prod.yml"
 
 usage_compose_mode() {
   cat <<'EOF' >&2
@@ -35,8 +35,27 @@ usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|<c
 
   --log-level LEVEL   LOG_LEVEL 환경변수 주입 (미지정 시 셸의 LOG_LEVEL 사용)
                       예: warn / fatal,error,warn / fatal,error,warn,log
-  env_file            .env.development|.env.production 없으면 .env 로 대체
+  env_file            .env (+ profile=hs 시 .env.hs 오버레이)
+  HIHING_DEPLOY_PROFILE  hs | prod — 서버별 도메인(-hs) 구분 (기본: compose 루트의 .hihing-deploy-profile)
 EOF
+}
+
+resolve_deploy_profile() {
+  local raw=""
+
+  if [ -n "${HIHING_DEPLOY_PROFILE:-}" ]; then
+    raw="${HIHING_DEPLOY_PROFILE}"
+  elif [ -f "${COMPOSE_ROOT}/.hihing-deploy-profile" ]; then
+    raw="$(tr -d '[:space:]' < "${COMPOSE_ROOT}/.hihing-deploy-profile")"
+  else
+    raw="prod"
+  fi
+
+  case "${raw}" in
+    hs|staging|stage|development|dev) printf '%s\n' hs ;;
+    prod|production|live|operational) printf '%s\n' prod ;;
+    *) printf '%s\n' prod ;;
+  esac
 }
 
 usage_compose_target() {
@@ -216,7 +235,9 @@ compose_files_for_mode() {
   fi
 
   printf '%s\n' "${pre_runtime_files[@]}"
-  runtime_override="$(write_runtime_compose_override "${mode}" "${HIHING_COMPOSE_LOG_LEVEL:-}" "${pre_runtime_files[@]}")"
+  local deploy_profile
+  deploy_profile="$(resolve_deploy_profile)"
+  runtime_override="$(write_runtime_compose_override "${mode}" "${deploy_profile}" "${HIHING_COMPOSE_LOG_LEVEL:-}" "${pre_runtime_files[@]}")"
   printf '%s\n' "${runtime_override}"
 }
 
@@ -229,18 +250,18 @@ cleanup_runtime_compose_override() {
 
 write_runtime_compose_override() {
   local mode="${1:-}"
-  local log_level="${2:-}"
-  shift 2 || true
-  python3 - "${HIHING_ROOT}" "${mode}" "${log_level}" "$@" <<'PY'
+  local deploy_profile="${2:-prod}"
+  local log_level="${3:-}"
+  shift 3 || true
+  python3 - "${COMPOSE_ROOT}" "${mode}" "${deploy_profile}" "${log_level}" "$@" <<'PY'
 import json
 import os
 import subprocess
 import sys
 import tempfile
 
-root, mode, log_level = sys.argv[1], sys.argv[2], sys.argv[3]
-compose_files = sys.argv[4:]
-suffix = "development" if mode == "dev" else "production"
+root, mode, deploy_profile, log_level = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+compose_files = sys.argv[5:]
 node_env = "production" if mode == "prod" else "development"
 
 service_dirs = {
@@ -273,15 +294,13 @@ def project_services() -> set[str]:
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 def resolve_env_files(rel_dir: str) -> list[str]:
-    mode_env = os.path.join(root, rel_dir, f".env.{suffix}")
     dot_env = os.path.join(root, rel_dir, ".env")
+    hs_env = os.path.join(root, rel_dir, ".env.hs")
     files: list[str] = []
-    if os.path.isfile(mode_env):
-        if os.path.isfile(dot_env):
-            files.append(f"./{rel_dir}/.env")
-        files.append(f"./{rel_dir}/.env.{suffix}")
-    elif os.path.isfile(dot_env):
+    if os.path.isfile(dot_env):
         files.append(f"./{rel_dir}/.env")
+    if deploy_profile == "hs" and os.path.isfile(hs_env):
+        files.append(f"./{rel_dir}/.env.hs")
     return files
 
 configured = project_services()
@@ -407,7 +426,7 @@ ensure_node22_ffmpeg_image() {
 
   echo "node22-ffmpeg image missing; building once..." >&2
   (
-    cd "${HIHING_ROOT}"
+    cd "${COMPOSE_ROOT}"
     local cmd=(docker compose)
     local compose_file
     for compose_file in "$@"; do

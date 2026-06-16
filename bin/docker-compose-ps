@@ -21,13 +21,19 @@ Shows a simplified `docker compose ps` view:
 
 Examples:
   docker-compose-ps
+  docker-compose-ps platform
   docker-compose-ps nginx
 EOF
   exit 0
 fi
 
-cd "${HIHING_ROOT}"
-docker compose -f "${BASE_COMPOSE}" ps --format json "$@" | python3 -c '
+cd "${COMPOSE_ROOT}"
+if [ "$#" -eq 0 ]; then
+  ps_args=()
+else
+  mapfile -t ps_args < <(resolve_services "$@")
+fi
+docker compose -f "${BASE_COMPOSE}" ps --format json "${ps_args[@]}" | python3 -c '
 import json
 import sys
 
