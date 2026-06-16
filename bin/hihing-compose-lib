@@ -123,7 +123,7 @@ prune_stale_recreate_containers() {
   while IFS= read -r name; do
     [ -n "${name}" ] || continue
     docker rm -f "${name}" >/dev/null 2>&1 || true
-  done < <(docker ps -a --format '{{.Names}}' | rg '^[0-9a-f]{8,}_' || true)
+  done < <(docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]{8,}_' || true)
 }
 
 compose_stop_services() {
@@ -184,8 +184,11 @@ compose_up_services() {
   local runtime_override=""
 
   mapfile -t compose_files < <(compose_files_for_mode "${mode}")
-  runtime_override="${compose_files[-1]}"
-  trap 'cleanup_runtime_compose_override "${runtime_override}"' RETURN
+  runtime_override=""
+  if [ "${#compose_files[@]}" -gt 0 ]; then
+    runtime_override="${compose_files[-1]}"
+  fi
+  trap 'cleanup_runtime_compose_override "${runtime_override:-}"' RETURN
   ensure_node22_ffmpeg_image "${compose_files[@]}"
 
   mapfile -t compose_cmd < <(build_compose_cmd "${compose_files[@]}")
