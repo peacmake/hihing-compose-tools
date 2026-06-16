@@ -33,7 +33,7 @@ if [ "$#" -eq 0 ]; then
 else
   mapfile -t ps_args < <(resolve_services "$@")
 fi
-docker compose -f "${BASE_COMPOSE}" ps --format json "${ps_args[@]}" | python3 -c '
+lifecycle_compose ps --format json "${ps_args[@]}" | python3 -c '
 import json
 import sys
 

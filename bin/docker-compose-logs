@@ -16,8 +16,8 @@ fi
 
 cd "${COMPOSE_ROOT}"
 if [ "$#" -eq 0 ]; then
-  docker compose -f "${BASE_COMPOSE}" logs --tail=50 -f
+  lifecycle_compose logs --tail=50 -f
 else
   mapfile -t services < <(resolve_services "$@")
-  docker compose -f "${BASE_COMPOSE}" logs --tail=50 -f "${services[@]}"
+  lifecycle_compose logs --tail=50 -f "${services[@]}"
 fi

@@ -61,10 +61,11 @@ resolve_deploy_profile() {
 usage_compose_target() {
   echo "usage: $1 [platform|i-bff|o-bff|<compose-service> ...]" >&2
   echo "  축약어: platform / i-bff / o-bff 만. 미지정 시 docker-compose.yml 전체 서비스" >&2
+  echo "  lifecycle 명령은 docker-compose.yml + 존재하는 dev/prod overlay 를 병합해 실행" >&2
 }
 
 list_all_compose_services() {
-  docker compose -f "${BASE_COMPOSE}" config --services
+  lifecycle_compose config --services
 }
 
 list_compose_services_for_files() {
@@ -88,6 +89,34 @@ build_compose_cmd() {
   printf '%s\n' "${cmd[@]}"
 }
 
+# base yml만으로는 image/build가 비어 있는 서비스가 있을 수 있다(overlay 패턴).
+# stop/rm/logs/ps 등 lifecycle 명령은 존재하는 dev·prod overlay를 모두 병합해 config 검증을 통과시킨다.
+collect_compose_overlay_files() {
+  if [ -f "${DEV_COMPOSE}" ]; then
+    printf '%s\n' "${DEV_COMPOSE}"
+  fi
+  if [ -f "${PROD_COMPOSE}" ]; then
+    printf '%s\n' "${PROD_COMPOSE}"
+  fi
+}
+
+compose_files_for_lifecycle() {
+  printf '%s\n' "${BASE_COMPOSE}"
+  collect_compose_overlay_files
+}
+
+build_lifecycle_compose_cmd() {
+  local -a compose_files=()
+  mapfile -t compose_files < <(compose_files_for_lifecycle)
+  build_compose_cmd "${compose_files[@]}"
+}
+
+lifecycle_compose() {
+  local -a compose_cmd=()
+  mapfile -t compose_cmd < <(build_lifecycle_compose_cmd)
+  "${compose_cmd[@]}" "$@"
+}
+
 # `up --force-recreate` 실패 시 남는 `{hash}_{name}` 컨테이너를 제거한다.
 prune_stale_recreate_containers() {
   local name
@@ -100,20 +129,20 @@ prune_stale_recreate_containers() {
 compose_stop_services() {
   local -a services=("$@")
   if [ "${#services[@]}" -eq 0 ]; then
-    docker compose -f "${BASE_COMPOSE}" stop
+    lifecycle_compose stop
     return 0
   fi
-  docker compose -f "${BASE_COMPOSE}" stop "${services[@]}"
+  lifecycle_compose stop "${services[@]}"
 }
 
 compose_rm_services() {
   local -a services=("$@")
   prune_stale_recreate_containers
   if [ "${#services[@]}" -eq 0 ]; then
-    docker compose -f "${BASE_COMPOSE}" rm -f >/dev/null 2>&1 || true
+    lifecycle_compose rm -f >/dev/null 2>&1 || true
     return 0
   fi
-  docker compose -f "${BASE_COMPOSE}" rm -f "${services[@]}" >/dev/null 2>&1 || true
+  lifecycle_compose rm -f "${services[@]}" >/dev/null 2>&1 || true
 }
 
 compose_down_services() {
@@ -125,8 +154,10 @@ compose_down_services() {
 detect_service_compose_mode() {
   local service="${1:-}"
   local container_id config_files
+  local -a compose_cmd=()
 
-  container_id="$(docker compose -f "${BASE_COMPOSE}" ps -q "${service}" 2>/dev/null | head -n1 || true)"
+  mapfile -t compose_cmd < <(build_lifecycle_compose_cmd)
+  container_id="$("${compose_cmd[@]}" ps -q "${service}" 2>/dev/null | head -n1 || true)"
   if [ -z "${container_id}" ] && docker inspect "${service}" >/dev/null 2>&1; then
     container_id="${service}"
   fi
@@ -171,8 +202,10 @@ compose_up_services() {
 
 recreate_base_services() {
   local -a services=("$@")
+  local -a compose_cmd=()
   prune_stale_recreate_containers
-  docker compose -f "${BASE_COMPOSE}" up -d --force-recreate --remove-orphans "${services[@]}"
+  mapfile -t compose_cmd < <(build_lifecycle_compose_cmd)
+  "${compose_cmd[@]}" up -d --force-recreate --remove-orphans "${services[@]}"
 }
 
 recreate_services_with_mode_detection() {
