@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-up [dev|prod] [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]
+# Usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|i-admin|tv|square|square-admin|chatbot|market|market-admin|nginx|<compose-service> ...]
 # Uses `up --force-recreate` so .env changes apply (prod also reruns build+start).
 # Example: docker-compose-up dev
-# Example: docker-compose-up prod platform nginx
+# Example: docker-compose-up prod --log-level warn platform nginx
+# Example: LOG_LEVEL=fatal,error,warn docker-compose-up prod i-bff
 # Example: docker-compose-up dev compose-service-name
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,5 +24,40 @@ if [ -z "${mode}" ]; then
   exit 1
 fi
 
+log_level="${LOG_LEVEL:-}"
+declare -a targets=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --log-level)
+      shift
+      log_level="${1:-}"
+      if [ -z "${log_level}" ]; then
+        echo "--log-level requires a value" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --log-level=*)
+      log_level="${1#--log-level=}"
+      if [ -z "${log_level}" ]; then
+        echo "--log-level requires a value" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    *)
+      targets+=("$1")
+      shift
+      ;;
+  esac
+done
+
+export HIHING_COMPOSE_LOG_LEVEL="${log_level}"
+
 cd "${HIHING_ROOT}"
-compose_up_services "${mode}" "$@"
+if [ "${#targets[@]}" -eq 0 ]; then
+  compose_up_services "${mode}"
+else
+  compose_up_services "${mode}" "${targets[@]}"
+fi

@@ -9,6 +9,7 @@ set -euo pipefail
 # Uses `up --force-recreate` instead of `restart` so .env changes are applied.
 # dev/prod is always auto-detected from running container compose labels.
 # prod: reruns build+start command. dev: reloads env; code hot-reload is unchanged.
+# LOG_LEVEL env (or docker-compose-up --log-level) applies on recreate via compose_up_services.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/hihing-compose-lib"

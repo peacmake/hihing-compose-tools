@@ -27,11 +27,17 @@ DEV_COMPOSE="${HIHING_ROOT}/docker-compose.dev.yml"
 PROD_COMPOSE="${HIHING_ROOT}/docker-compose.prod.yml"
 
 usage_compose_mode() {
-  echo "usage: docker-compose-up [dev|prod] [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]" >&2
+  cat <<'EOF' >&2
+usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|i-admin|tv|square|square-admin|chatbot|market|market-admin|nginx|<compose-service> ...]
+
+  --log-level LEVEL   LOG_LEVEL 환경변수 주입 (미지정 시 셸의 LOG_LEVEL 사용)
+                      예: warn / fatal,error,warn / fatal,error,warn,log
+  env_file            .env.development|.env.production 없으면 .env 로 대체
+EOF
 }
 
 usage_compose_target() {
-  echo "usage: $1 [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]" >&2
+  echo "usage: $1 [platform|i-bff|o-bff|i-admin|tv|square|square-admin|chatbot|market|market-admin|nginx|<compose-service> ...]" >&2
 }
 
 list_all_compose_services() {
@@ -76,8 +82,11 @@ compose_up_services() {
   local -a compose_files=()
   local -a compose_cmd=()
   local -a services=()
+  local runtime_override=""
 
   mapfile -t compose_files < <(compose_files_for_mode "${mode}")
+  runtime_override="${compose_files[-1]}"
+  trap 'cleanup_runtime_compose_override "${runtime_override}"' RETURN
   ensure_node22_ffmpeg_image "${compose_files[@]}"
 
   mapfile -t compose_cmd < <(build_compose_cmd "${compose_files[@]}")
@@ -139,6 +148,7 @@ recreate_services_with_mode_detection() {
 compose_files_for_mode() {
   local mode="${1:-}"
   local override=""
+  local runtime_override=""
   case "${mode}" in
     dev) override="${DEV_COMPOSE}" ;;
     prod) override="${PROD_COMPOSE}" ;;
@@ -152,6 +162,83 @@ compose_files_for_mode() {
   if [ -f "${override}" ]; then
     printf '%s\n' "${override}"
   fi
+  runtime_override="$(write_runtime_compose_override "${mode}" "${HIHING_COMPOSE_LOG_LEVEL:-}")"
+  printf '%s\n' "${runtime_override}"
+}
+
+cleanup_runtime_compose_override() {
+  local runtime_override="${1:-}"
+  if [ -n "${runtime_override}" ] && [ -f "${runtime_override}" ]; then
+    rm -f "${runtime_override}"
+  fi
+}
+
+write_runtime_compose_override() {
+  local mode="${1:-}"
+  local log_level="${2:-}"
+  python3 - "${HIHING_ROOT}" "${mode}" "${log_level}" <<'PY'
+import json
+import os
+import sys
+import tempfile
+
+root, mode, log_level = sys.argv[1], sys.argv[2], sys.argv[3]
+suffix = "development" if mode == "dev" else "production"
+node_env = "production" if mode == "prod" else "development"
+
+service_dirs = [
+    ("hihing-i-bff-1", "hihing-i-services/bff"),
+    ("hihing-i-bff-2", "hihing-i-services/bff"),
+    ("hihing-o-bff-1", "hihing-o-services/bff"),
+    ("hihing-o-bff-2", "hihing-o-services/bff"),
+    ("hihing-platform-api-1", "hihing-platform-api"),
+    ("hihing-platform-api-2", "hihing-platform-api"),
+    ("tv_frontend", "hihing-i-services/tv_frontend"),
+    ("hihing-i-admin", "hihing-i-services/hihing-i-admin"),
+    ("square-web", "hihing-o-services/square-web"),
+    ("square-admin", "hihing-o-services/square-admin"),
+    ("hihing-chatbot", "hihing-o-services/hihing-chatbot"),
+    ("market_backend", "market_backend"),
+    ("market_admin", "market_admin"),
+]
+
+log_level_services = {name for name, _ in service_dirs}
+
+def resolve_env_files(rel_dir: str) -> list[str]:
+    mode_env = os.path.join(root, rel_dir, f".env.{suffix}")
+    dot_env = os.path.join(root, rel_dir, ".env")
+    files: list[str] = []
+    if os.path.isfile(mode_env):
+        if os.path.isfile(dot_env):
+            files.append(f"./{rel_dir}/.env")
+        files.append(f"./{rel_dir}/.env.{suffix}")
+    elif os.path.isfile(dot_env):
+        files.append(f"./{rel_dir}/.env")
+    return files
+
+lines = ["services:"]
+for service, rel_dir in service_dirs:
+    lines.append(f"  {service}:")
+    env_files = resolve_env_files(rel_dir)
+    if env_files:
+        lines.append("    env_file:")
+        for path in env_files:
+            lines.append(f"      - {path}")
+
+    environment: dict[str, str] = {"NODE_ENV": node_env}
+    if log_level and service in log_level_services:
+        environment["LOG_LEVEL"] = log_level
+
+    lines.append("    environment:")
+    for key, value in environment.items():
+        lines.append(f"      {key}: {json.dumps(value)}")
+
+fd, path = tempfile.mkstemp(prefix="hihing-compose-runtime.", suffix=".yml")
+os.close(fd)
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(lines) + "\n")
+print(path)
+PY
 }
 
 append_service_group() {
@@ -164,6 +251,9 @@ append_service_group() {
     tv) printf '%s\n' tv_frontend ;;
     square) printf '%s\n' square-web ;;
     square-admin) printf '%s\n' square-admin ;;
+    chatbot) printf '%s\n' hihing-chatbot ;;
+    market) printf '%s\n' market_backend ;;
+    market-admin) printf '%s\n' market_admin ;;
     nginx) printf '%s\n' nginx ;;
     *) printf '%s\n' "${target}" ;;
   esac
