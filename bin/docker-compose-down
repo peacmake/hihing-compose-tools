@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-down [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]
+# Usage: docker-compose-down [platform|i-bff|o-bff|i-admin|tv|square|square-admin|chatbot|market|market-admin|nginx|<compose-service> ...]
 # Example: docker-compose-down
 # Example: docker-compose-down i-bff nginx
 # Example: docker-compose-down compose-service-name
+#
+# stop 후 rm 까지 수행해 force-recreate 시 {hash}_{name} 충돌을 방지한다.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/hihing-compose-lib"
@@ -16,8 +18,8 @@ fi
 
 cd "${HIHING_ROOT}"
 if [ "$#" -eq 0 ]; then
-  docker compose -f "${BASE_COMPOSE}" stop
+  compose_down_services
 else
   mapfile -t services < <(resolve_services "$@")
-  docker compose -f "${BASE_COMPOSE}" stop "${services[@]}"
+  compose_down_services "${services[@]}"
 fi

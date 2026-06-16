@@ -54,6 +54,40 @@ build_compose_cmd() {
   printf '%s\n' "${cmd[@]}"
 }
 
+# `up --force-recreate` 실패 시 남는 `{hash}_{name}` 컨테이너를 제거한다.
+prune_stale_recreate_containers() {
+  local name
+  while IFS= read -r name; do
+    [ -n "${name}" ] || continue
+    docker rm -f "${name}" >/dev/null 2>&1 || true
+  done < <(docker ps -a --format '{{.Names}}' | rg '^[0-9a-f]{8,}_' || true)
+}
+
+compose_stop_services() {
+  local -a services=("$@")
+  if [ "${#services[@]}" -eq 0 ]; then
+    docker compose -f "${BASE_COMPOSE}" stop
+    return 0
+  fi
+  docker compose -f "${BASE_COMPOSE}" stop "${services[@]}"
+}
+
+compose_rm_services() {
+  local -a services=("$@")
+  prune_stale_recreate_containers
+  if [ "${#services[@]}" -eq 0 ]; then
+    docker compose -f "${BASE_COMPOSE}" rm -f >/dev/null 2>&1 || true
+    return 0
+  fi
+  docker compose -f "${BASE_COMPOSE}" rm -f "${services[@]}" >/dev/null 2>&1 || true
+}
+
+compose_down_services() {
+  local -a services=("$@")
+  compose_stop_services "${services[@]}"
+  compose_rm_services "${services[@]}"
+}
+
 detect_service_compose_mode() {
   local service="${1:-}"
   local container_id config_files
@@ -90,19 +124,21 @@ compose_up_services() {
   ensure_node22_ffmpeg_image "${compose_files[@]}"
 
   mapfile -t compose_cmd < <(build_compose_cmd "${compose_files[@]}")
+  prune_stale_recreate_containers
 
   if [ "${#targets[@]}" -eq 0 ]; then
-    "${compose_cmd[@]}" up -d --force-recreate
+    "${compose_cmd[@]}" up -d --force-recreate --remove-orphans
     return 0
   fi
 
   mapfile -t services < <(resolve_services "${targets[@]}")
-  "${compose_cmd[@]}" up -d --force-recreate "${services[@]}"
+  "${compose_cmd[@]}" up -d --force-recreate --remove-orphans "${services[@]}"
 }
 
 recreate_base_services() {
   local -a services=("$@")
-  docker compose -f "${BASE_COMPOSE}" up -d --force-recreate "${services[@]}"
+  prune_stale_recreate_containers
+  docker compose -f "${BASE_COMPOSE}" up -d --force-recreate --remove-orphans "${services[@]}"
 }
 
 recreate_services_with_mode_detection() {
