@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-logs [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]
+# Usage: docker-compose-logs [platform|i-bff|o-bff|<compose-service> ...]
 # Example: docker-compose-logs
 # Example: docker-compose-logs platform
 # Example: docker-compose-logs compose-service-name

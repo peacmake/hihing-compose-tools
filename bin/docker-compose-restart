@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-restart [platform|i-bff|o-bff|i-admin|tv|square|square-admin|nginx|<compose-service> ...]
+# Usage: docker-compose-restart [platform|i-bff|o-bff|<compose-service> ...]
 # Example: docker-compose-restart
 # Example: docker-compose-restart platform
 # Example: docker-compose-restart hihing-i-bff-1

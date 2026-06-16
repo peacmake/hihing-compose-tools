@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-down [platform|i-bff|o-bff|i-admin|tv|square|square-admin|chatbot|market|market-admin|nginx|<compose-service> ...]
+# Usage: docker-compose-down [platform|i-bff|o-bff|<compose-service> ...]
 # Example: docker-compose-down
 # Example: docker-compose-down i-bff nginx
 # Example: docker-compose-down compose-service-name

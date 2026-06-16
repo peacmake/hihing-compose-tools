@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|i-admin|tv|square|square-admin|chatbot|market|market-admin|nginx|<compose-service> ...]
+# Usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|<compose-service> ...]
 # Uses `up --force-recreate` so .env changes apply (prod also reruns build+start).
 # Example: docker-compose-up dev
 # Example: docker-compose-up prod --log-level warn platform nginx
