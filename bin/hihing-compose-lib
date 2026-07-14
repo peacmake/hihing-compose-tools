@@ -28,16 +28,17 @@ PROD_COMPOSE="${COMPOSE_ROOT}/docker-compose.prod.yml"
 
 usage_compose_mode() {
   cat <<'EOF' >&2
-usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|<compose-service> ...]
+usage: docker-compose-up [dev|prod] [--log-level LEVEL] [--rebuild] [platform|i-bff|o-bff|<compose-service> ...]
 
   서비스 미지정 시 docker-compose.yml + docker-compose.{dev|prod}.yml 병합 결과의 전체 서비스 대상
   축약어는 platform / i-bff / o-bff 만 인식 (그 외는 compose 서비스명 그대로)
 
-  기본 up 플래그: -d --build --force-recreate --remove-orphans
-    (--build 로 이미지 리빌드 후, recreate 로 컨테이너를 다시 띄움)
+  기본 up 플래그: -d --force-recreate --remove-orphans
+  --rebuild           이미지 리빌드 추가 (--build). Dockerfile/의존성 변경 시에만 사용
+                      코드만 바뀐 prod 재기동은 recreate 만으로 충분(컨테이너 기동 시 build+start)
 
   --log-level LEVEL   LOG_LEVEL 환경변수 주입 (미지정 시 셸의 LOG_LEVEL 사용)
-                      예: warn / fatal,error,warn / fatal,error,warn,log
+                      예: warn / fatal,error,warn / log,debug
   env_file            .env (+ profile=hs 시 .env.hs 오버레이)
   HIHING_DEPLOY_PROFILE  hs | prod — 서버별 도메인(-hs) 구분 (기본: compose 루트의 .hihing-deploy-profile)
 EOF
@@ -62,8 +63,9 @@ resolve_deploy_profile() {
 }
 
 usage_compose_target() {
-  echo "usage: $1 [platform|i-bff|o-bff|<compose-service> ...]" >&2
+  echo "usage: $1 [--rebuild] [platform|i-bff|o-bff|<compose-service> ...]" >&2
   echo "  축약어: platform / i-bff / o-bff 만. 미지정 시 docker-compose.yml 전체 서비스" >&2
+  echo "  --rebuild: 이미지 리빌드(--build) 포함. 기본은 recreate only" >&2
   echo "  lifecycle 명령은 docker-compose.yml + 존재하는 dev/prod overlay 를 병합해 실행" >&2
 }
 
@@ -177,9 +179,14 @@ detect_service_compose_mode() {
   esac
 }
 
-# docker compose up 공통 플래그: 이미지 리빌드 + 강제 재생성 + orphan 정리
+# docker compose up 공통 플래그.
+# 기본: recreate (+ orphan 정리). HIHING_COMPOSE_REBUILD=1 이면 --build 추가.
 compose_up_default_args() {
-  printf '%s\n' -d --build --force-recreate --remove-orphans
+  if [ "${HIHING_COMPOSE_REBUILD:-0}" = "1" ]; then
+    printf '%s\n' -d --build --force-recreate --remove-orphans
+  else
+    printf '%s\n' -d --force-recreate --remove-orphans
+  fi
 }
 
 compose_up_services() {

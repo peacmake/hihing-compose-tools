@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-restart [platform|i-bff|o-bff|<compose-service> ...]
+# Usage: docker-compose-restart [--rebuild] [platform|i-bff|o-bff|<compose-service> ...]
 # Example: docker-compose-restart
 # Example: docker-compose-restart platform
-# Example: docker-compose-restart hihing-i-bff-1
+# Example: docker-compose-restart --rebuild tv_frontend
 #
-# Uses `up -d --build --force-recreate --remove-orphans` instead of `restart`
-# so images rebuild and .env / overlay changes are applied.
+# Uses `up -d --force-recreate --remove-orphans` instead of `restart`
+# so .env / overlay changes are applied. Pass --rebuild to also rebuild images.
 # dev/prod is always auto-detected from running container compose labels.
-# prod: image rebuild + container recreate (entrypoints may also rerun build+start).
 # LOG_LEVEL env (or docker-compose-up --log-level) applies on recreate via compose_up_services.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,5 +19,26 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
+rebuild=0
+declare -a targets=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --rebuild)
+      rebuild=1
+      shift
+      ;;
+    *)
+      targets+=("$1")
+      shift
+      ;;
+  esac
+done
+
+export HIHING_COMPOSE_REBUILD="${rebuild}"
+
 cd "${COMPOSE_ROOT}"
-recreate_services_with_mode_detection "$@"
+if [ "${#targets[@]}" -eq 0 ]; then
+  recreate_services_with_mode_detection
+else
+  recreate_services_with_mode_detection "${targets[@]}"
+fi

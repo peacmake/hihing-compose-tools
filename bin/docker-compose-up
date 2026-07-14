@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|<compose-service> ...]
-# Defaults: `up -d --build --force-recreate --remove-orphans`
-#   --build           rebuild images before starting
+# Usage: docker-compose-up [dev|prod] [--log-level LEVEL] [--rebuild] [platform|i-bff|o-bff|<compose-service> ...]
+# Defaults: `up -d --force-recreate --remove-orphans`
 #   --force-recreate  apply .env / overlay changes (prod entrypoints can rerun build+start)
 #   --remove-orphans  drop leftover containers from removed services
+#   --rebuild         also pass --build (Dockerfile / image-layer changes)
 # Example: docker-compose-up dev
 # Example: docker-compose-up prod --log-level warn platform nginx
-# Example: LOG_LEVEL=fatal,error,warn docker-compose-up prod i-bff
 # Example: docker-compose-up prod --log-level log,debug tv_frontend
-# Example: docker-compose-up dev compose-service-name
+# Example: docker-compose-up prod --log-level log,debug --rebuild tv_frontend
+# Example: LOG_LEVEL=fatal,error,warn docker-compose-up prod i-bff
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/hihing-compose-lib"
@@ -29,6 +29,7 @@ if [ -z "${mode}" ]; then
 fi
 
 log_level="${LOG_LEVEL:-}"
+rebuild=0
 declare -a targets=()
 
 while [ "$#" -gt 0 ]; do
@@ -37,7 +38,7 @@ while [ "$#" -gt 0 ]; do
       shift
       log_level="${1:-}"
       if [ -z "${log_level}" ]; then
-        echo "--log-level requires a value" >&2
+        echo "--log-level requires a value (예: --log-level log,debug)" >&2
         exit 1
       fi
       shift
@@ -45,9 +46,13 @@ while [ "$#" -gt 0 ]; do
     --log-level=*)
       log_level="${1#--log-level=}"
       if [ -z "${log_level}" ]; then
-        echo "--log-level requires a value" >&2
+        echo "--log-level requires a value (예: --log-level=log,debug)" >&2
         exit 1
       fi
+      shift
+      ;;
+    --rebuild)
+      rebuild=1
       shift
       ;;
     *)
@@ -58,6 +63,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 export HIHING_COMPOSE_LOG_LEVEL="${log_level}"
+export HIHING_COMPOSE_REBUILD="${rebuild}"
 
 cd "${COMPOSE_ROOT}"
 if [ "${#targets[@]}" -eq 0 ]; then
