@@ -33,6 +33,9 @@ usage: docker-compose-up [dev|prod] [--log-level LEVEL] [platform|i-bff|o-bff|<c
   서비스 미지정 시 docker-compose.yml + docker-compose.{dev|prod}.yml 병합 결과의 전체 서비스 대상
   축약어는 platform / i-bff / o-bff 만 인식 (그 외는 compose 서비스명 그대로)
 
+  기본 up 플래그: -d --build --force-recreate --remove-orphans
+    (--build 로 이미지 리빌드 후, recreate 로 컨테이너를 다시 띄움)
+
   --log-level LEVEL   LOG_LEVEL 환경변수 주입 (미지정 시 셸의 LOG_LEVEL 사용)
                       예: warn / fatal,error,warn / fatal,error,warn,log
   env_file            .env (+ profile=hs 시 .env.hs 오버레이)
@@ -174,12 +177,18 @@ detect_service_compose_mode() {
   esac
 }
 
+# docker compose up 공통 플래그: 이미지 리빌드 + 강제 재생성 + orphan 정리
+compose_up_default_args() {
+  printf '%s\n' -d --build --force-recreate --remove-orphans
+}
+
 compose_up_services() {
   local mode="${1:-}"
   shift || true
   local -a targets=("$@")
   local -a compose_files=()
   local -a compose_cmd=()
+  local -a up_args=()
   local -a services=()
   local runtime_override=""
 
@@ -192,23 +201,26 @@ compose_up_services() {
   ensure_node22_ffmpeg_image "${compose_files[@]}"
 
   mapfile -t compose_cmd < <(build_compose_cmd "${compose_files[@]}")
+  mapfile -t up_args < <(compose_up_default_args)
   prune_stale_recreate_containers
 
   if [ "${#targets[@]}" -eq 0 ]; then
-    "${compose_cmd[@]}" up -d --force-recreate --remove-orphans
+    "${compose_cmd[@]}" up "${up_args[@]}"
     return 0
   fi
 
   mapfile -t services < <(resolve_services "${targets[@]}")
-  "${compose_cmd[@]}" up -d --force-recreate --remove-orphans "${services[@]}"
+  "${compose_cmd[@]}" up "${up_args[@]}" "${services[@]}"
 }
 
 recreate_base_services() {
   local -a services=("$@")
   local -a compose_cmd=()
+  local -a up_args=()
   prune_stale_recreate_containers
   mapfile -t compose_cmd < <(build_lifecycle_compose_cmd)
-  "${compose_cmd[@]}" up -d --force-recreate --remove-orphans "${services[@]}"
+  mapfile -t up_args < <(compose_up_default_args)
+  "${compose_cmd[@]}" up "${up_args[@]}" "${services[@]}"
 }
 
 recreate_services_with_mode_detection() {
@@ -363,7 +375,10 @@ for service in sorted(configured):
         for path in env_files:
             lines.append(f"      - {path}")
 
-    environment: dict[str, str] = {"NODE_ENV": node_env}
+    environment: dict[str, str] = {
+        "NODE_ENV": node_env,
+        "HIHING_DEPLOY_PROFILE": deploy_profile,
+    }
     if log_level:
         environment["LOG_LEVEL"] = log_level
 
