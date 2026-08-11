@@ -257,6 +257,11 @@ recreate_base_services() {
 # 그래서 짝을 이루는 서비스는 한 대씩 재생성하고 healthy 를 확인한 뒤 다음으로
 # 넘어간다. 첫 대가 살아나지 못하면 두 번째는 건드리지 않아 최소 한 대는
 # 구버전으로 계속 서비스한다.
+#
+# 더 중요한 함정은 depends_on 이다. `-2` 에 `depends_on: -1` 이 걸려 있어서
+# `up --force-recreate hihing-i-bff-2` 처럼 한 대만 지정해도 compose 가 `-1` 까지
+# 함께 recreate 한다(--dry-run 으로 확인). 그래서 짝을 이루는 서비스는 한 대만
+# 교체할 때도 --no-deps 를 붙인다. 이게 없으면 롤링 자체가 성립하지 않는다.
 
 ROLLING_POLL_INTERVAL=3
 
@@ -317,8 +322,35 @@ wait_for_service_ready() {
   return 1
 }
 
-# 요청 목록에 `<base>-1` 과 `<base>-2` 가 모두 있으면 롤링 대상으로 본다.
-# 한쪽만 지정한 경우(예: 특정 인스턴스만 재기동)는 그대로 단독 처리한다.
+declare -a ALL_COMPOSE_SERVICES=()
+
+# compose 정의에 `<base>-1` 과 `<base>-2` 가 모두 있으면 짝으로 본다.
+# 요청 목록이 아니라 compose 정의 기준이라, 한쪽만 지정해도 짝인지 판별된다.
+is_paired_service() {
+  local service="${1:-}"
+  local base index partner
+
+  [[ "${service}" =~ ^(.+)-([12])$ ]] || return 1
+  base="${BASH_REMATCH[1]}"
+  index="${BASH_REMATCH[2]}"
+  if [ "${index}" = "1" ]; then partner="${base}-2"; else partner="${base}-1"; fi
+
+  if [ "${#ALL_COMPOSE_SERVICES[@]}" -eq 0 ]; then
+    mapfile -t ALL_COMPOSE_SERVICES < <(list_all_compose_services)
+  fi
+
+  local candidate
+  for candidate in "${ALL_COMPOSE_SERVICES[@]}"; do
+    if [ "${candidate}" = "${partner}" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 요청 목록에 `<base>-1` 과 `<base>-2` 가 모두 있으면 순차 롤링한다.
+# 한쪽만 지정한 경우(예: 특정 인스턴스만 교체)는 순서를 지킬 것이 없으므로 바로
+# 재생성하되, depends_on 때문에 짝까지 끌려 들어가지 않도록 --no-deps 는 붙인다.
 compose_up_services_rolling() {
   local mode="${1:-}"
   shift || true
@@ -326,6 +358,7 @@ compose_up_services_rolling() {
   local -a services=()
   local -A requested=()
   local -a rolling_bases=()
+  local -a paired_singles=()
   local -a singles=()
   local service base index partner member
   local rolling_status=0
@@ -358,6 +391,10 @@ compose_up_services_rolling() {
         fi
         continue
       fi
+      if is_paired_service "${service}"; then
+        paired_singles+=("${service}")
+        continue
+      fi
     fi
     singles+=("${service}")
   done
@@ -367,6 +404,16 @@ compose_up_services_rolling() {
   fi
 
   export HIHING_COMPOSE_NO_DEPS=1
+
+  for service in "${paired_singles[@]}"; do
+    echo "single: ${service} 만 재생성합니다 (--no-deps, 짝은 그대로 유지)" >&2
+    compose_up_services "${mode}" "${service}"
+    if ! wait_for_service_ready "${service}"; then
+      echo "경고: ${service} 가 정상화되지 않았습니다. docker-compose-logs ${service} 로 확인하세요." >&2
+      rolling_status=1
+    fi
+  done
+
   for base in "${rolling_bases[@]}"; do
     echo "rolling: ${base}-1 → ${base}-2 (한 대씩 재생성 후 준비 확인)" >&2
     for member in "${base}-1" "${base}-2"; do
