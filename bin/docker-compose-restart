@@ -8,6 +8,9 @@ set -euo pipefail
 #
 # Uses `up -d --force-recreate --remove-orphans` instead of `restart`
 # so .env / overlay changes are applied. Pass --rebuild to also rebuild images.
+# `-1`/`-2` 로 이중화된 서비스(platform / i-bff / o-bff)는 기본이 롤링이다.
+# 한 대씩 재생성하고 healthy 를 확인한 뒤 다음 대로 넘어가며, 첫 대가 살아나지
+# 못하면 중단한다. 동시 재생성이 필요하면 --no-rolling.
 # dev/prod is always auto-detected from running container compose labels.
 # LOG_LEVEL env (or docker-compose-up --log-level) applies on recreate via compose_up_services.
 
@@ -20,11 +23,16 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 fi
 
 rebuild=0
+no_rolling=0
 declare -a targets=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --rebuild)
       rebuild=1
+      shift
+      ;;
+    --no-rolling)
+      no_rolling=1
       shift
       ;;
     *)
@@ -35,6 +43,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 export HIHING_COMPOSE_REBUILD="${rebuild}"
+export HIHING_COMPOSE_NO_ROLLING="${no_rolling}"
 
 cd "${COMPOSE_ROOT}"
 if [ "${#targets[@]}" -eq 0 ]; then
