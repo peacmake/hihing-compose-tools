@@ -43,6 +43,11 @@ usage: docker-compose-up [dev|prod] [--log-level LEVEL] [--rebuild] [--no-rollin
   --no-rolling        롤링을 끄고 두 대를 동시에 재생성 (순단 발생, 긴급 복구용)
   HIHING_ROLLING_TIMEOUT  인스턴스당 준비 대기 한계(초, 기본 300). prod 는 기동 시 빌드가 돈다
 
+  FE 무중단: tv_frontend / square-web 은 롤링 전에 일회용 컨테이너에서 새 릴리스를
+        먼저 빌드하고(`bin/next-release.sh`), 성공 시에만 한 대씩 교체한다.
+        빌드 실패 시 컨테이너를 건드리지 않아 구 버전이 계속 서비스된다.
+  HIHING_FE_SKIP_BUILD=1  FE 선빌드를 건너뛰고 현재 릴리스로만 재기동
+
   --log-level LEVEL   LOG_LEVEL 환경변수 주입 (미지정 시 셸의 LOG_LEVEL 사용)
                       예: warn / fatal,error,warn / log,debug
   env_file            .env (+ profile=hs 시 .env.hs 오버레이)
@@ -265,6 +270,68 @@ recreate_base_services() {
 
 ROLLING_POLL_INTERVAL=3
 
+# ---------------------------------------------------------------------------
+# Next.js FE 릴리스 선빌드
+# ---------------------------------------------------------------------------
+# tv_frontend / square-web 은 사용자 대상이라 무중단이 필요하다. 그런데 두 인스턴스가
+# 소스 디렉터리를 볼륨으로 공유하므로, 컨테이너 기동 시 빌드하는 기존 방식으로는
+# (1) 빌드 시간만큼 502 가 나고 (2) 한 대의 빌드가 다른 대가 읽던 `.next` 청크를
+# 덮어써 버린다.
+#
+# 그래서 빌드는 서빙 중인 컨테이너를 건드리지 않는 일회용 컨테이너에서 먼저 끝내고,
+# `.next-release` 포인터를 원자적으로 교체한 뒤에야 롤링 재기동에 들어간다.
+# 빌드가 실패하면 포인터가 그대로라 구 릴리스가 계속 서비스된다.
+declare -A FE_RELEASE_APP_DIRS=(
+  [tv_frontend]="hihing-i-services/tv_frontend"
+  [square-web]="hihing-o-services/square-web"
+)
+
+FE_RELEASE_SCRIPT="bin/next-release.sh"
+
+resolve_hihing_network() {
+  docker network ls --filter name=_hihing_network --format '{{.Name}}' 2>/dev/null | head -n1
+}
+
+build_fe_release() {
+  local base="${1:-}"
+  local rel_dir="${FE_RELEASE_APP_DIRS[${base}]:-}"
+  local app_dir release_script network
+
+  [ -n "${rel_dir}" ] || return 0
+
+  if [ "${HIHING_FE_SKIP_BUILD:-0}" = "1" ]; then
+    echo "fe-release: ${base} 빌드 생략(HIHING_FE_SKIP_BUILD=1) — 현재 릴리스 그대로 재기동합니다." >&2
+    return 0
+  fi
+
+  app_dir="${COMPOSE_ROOT}/${rel_dir}"
+  release_script="${COMPOSE_ROOT}/${FE_RELEASE_SCRIPT}"
+  if [ ! -d "${app_dir}" ]; then
+    echo "fe-release: ${app_dir} 가 없습니다." >&2
+    return 1
+  fi
+  if [ ! -f "${release_script}" ]; then
+    echo "fe-release: ${release_script} 가 없습니다." >&2
+    return 1
+  fi
+
+  network="$(resolve_hihing_network)"
+  if [ -z "${network}" ]; then
+    echo "fe-release: hihing 네트워크를 찾지 못했습니다." >&2
+    return 1
+  fi
+
+  echo "fe-release: ${base} 새 릴리스 빌드 시작 (서빙 중인 컨테이너는 유지)" >&2
+  docker run --rm \
+    --network "${network}" \
+    -v "${app_dir}:/usr/src/app" \
+    -v "${COMPOSE_ROOT}/.hihing-deploy-profile:/usr/src/app/.hihing-deploy-profile:ro" \
+    -v "${release_script}:/opt/hihing/next-release.sh:ro" \
+    -w /usr/src/app \
+    -e NODE_ENV=production \
+    node22-ffmpeg sh /opt/hihing/next-release.sh build >/dev/null
+}
+
 resolve_container_ref() {
   local service="${1:-}"
   local container_id=""
@@ -415,6 +482,12 @@ compose_up_services_rolling() {
   done
 
   for base in "${rolling_bases[@]}"; do
+    # 빌드 실패 시 컨테이너를 아예 건드리지 않아 구 릴리스가 계속 서비스된다.
+    if ! build_fe_release "${base}"; then
+      echo "rolling 생략: ${base} 릴리스 빌드가 실패했습니다. 기존 컨테이너를 유지합니다." >&2
+      rolling_status=1
+      continue
+    fi
     echo "rolling: ${base}-1 → ${base}-2 (한 대씩 재생성 후 준비 확인)" >&2
     for member in "${base}-1" "${base}-2"; do
       compose_up_services "${mode}" "${member}"
@@ -527,9 +600,11 @@ service_dirs = {
     "hihing-o-bff-2": "hihing-o-services/bff",
     "hihing-platform-api-1": "hihing-platform-api",
     "hihing-platform-api-2": "hihing-platform-api",
-    "tv_frontend": "hihing-i-services/tv_frontend",
+    "tv_frontend-1": "hihing-i-services/tv_frontend",
+    "tv_frontend-2": "hihing-i-services/tv_frontend",
     "hihing-i-admin": "hihing-i-services/hihing-i-admin",
-    "square-web": "hihing-o-services/square-web",
+    "square-web-1": "hihing-o-services/square-web",
+    "square-web-2": "hihing-o-services/square-web",
     "square-admin": "hihing-o-services/square-admin",
     "hihing-chatbot": "hihing-o-services/hihing-chatbot",
     "market_backend": "market_backend",
@@ -611,6 +686,9 @@ append_service_group() {
     platform) printf '%s\n' hihing-platform-api-1 hihing-platform-api-2 ;;
     i-bff) printf '%s\n' hihing-i-bff-1 hihing-i-bff-2 ;;
     o-bff) printf '%s\n' hihing-o-bff-1 hihing-o-bff-2 ;;
+    # 이중화 이후에도 기존 서비스명을 그대로 쓸 수 있게 짝으로 펼친다.
+    tv_frontend) printf '%s\n' tv_frontend-1 tv_frontend-2 ;;
+    square-web) printf '%s\n' square-web-1 square-web-2 ;;
     *) printf '%s\n' "${target}" ;;
   esac
 }
