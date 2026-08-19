@@ -31,7 +31,8 @@ usage_compose_mode() {
 usage: docker-compose-up [dev|prod] [--log-level LEVEL] [--rebuild] [--no-rolling] [platform|i-bff|o-bff|<compose-service> ...]
 
   서비스 미지정 시 docker-compose.yml + docker-compose.{dev|prod}.yml 병합 결과의 전체 서비스 대상
-  축약어는 platform / i-bff / o-bff 만 인식 (그 외는 compose 서비스명 그대로)
+  축약어: platform / i-bff / o-bff
+  이중화 FE: tv_frontend / square-web / hihing-i-admin / square-admin 도 짝(-1/-2)으로 펼침
 
   기본 up 플래그: -d --force-recreate --remove-orphans
   --rebuild           이미지 리빌드 추가 (--build). Dockerfile/의존성 변경 시에만 사용
@@ -45,6 +46,7 @@ usage: docker-compose-up [dev|prod] [--log-level LEVEL] [--rebuild] [--no-rollin
 
   FE 무중단: tv_frontend / square-web 은 롤링 전에 일회용 컨테이너에서 새 릴리스를
         먼저 빌드하고(`bin/next-release.sh`), 성공 시에만 한 대씩 교체한다.
+        hihing-i-admin / square-admin 은 동일하게 `bin/vite-release.sh` 로 선빌드한다.
         빌드 실패 시 컨테이너를 건드리지 않아 구 버전이 계속 서비스된다.
   HIHING_FE_SKIP_BUILD=1  FE 선빌드를 건너뛰고 현재 릴리스로만 재기동
 
@@ -271,22 +273,27 @@ recreate_base_services() {
 ROLLING_POLL_INTERVAL=3
 
 # ---------------------------------------------------------------------------
-# Next.js FE 릴리스 선빌드
+# FE 릴리스 선빌드 (Next.js / Vite SPA)
 # ---------------------------------------------------------------------------
-# tv_frontend / square-web 은 사용자 대상이라 무중단이 필요하다. 그런데 두 인스턴스가
-# 소스 디렉터리를 볼륨으로 공유하므로, 컨테이너 기동 시 빌드하는 기존 방식으로는
-# (1) 빌드 시간만큼 502 가 나고 (2) 한 대의 빌드가 다른 대가 읽던 `.next` 청크를
-# 덮어써 버린다.
+# 이중화 FE 는 소스 디렉터리를 볼륨으로 공유하므로, 컨테이너 기동 시 빌드하면
+# (1) 빌드 시간만큼 502 가 나고 (2) 한 대의 빌드가 다른 대가 읽던 청크를 덮어쓴다.
 #
 # 그래서 빌드는 서빙 중인 컨테이너를 건드리지 않는 일회용 컨테이너에서 먼저 끝내고,
-# `.next-release` 포인터를 원자적으로 교체한 뒤에야 롤링 재기동에 들어간다.
+# 포인터를 원자적으로 교체한 뒤에야 롤링 재기동에 들어간다.
 # 빌드가 실패하면 포인터가 그대로라 구 릴리스가 계속 서비스된다.
 declare -A FE_RELEASE_APP_DIRS=(
   [tv_frontend]="hihing-i-services/tv_frontend"
   [square-web]="hihing-o-services/square-web"
+  [hihing-i-admin]="hihing-i-services/hihing-i-admin"
+  [square-admin]="hihing-o-services/square-admin"
 )
 
-FE_RELEASE_SCRIPT="bin/next-release.sh"
+declare -A FE_RELEASE_KIND=(
+  [tv_frontend]=next
+  [square-web]=next
+  [hihing-i-admin]=vite
+  [square-admin]=vite
+)
 
 resolve_hihing_network() {
   docker network ls --filter name=_hihing_network --format '{{.Name}}' 2>/dev/null | head -n1
@@ -295,7 +302,8 @@ resolve_hihing_network() {
 build_fe_release() {
   local base="${1:-}"
   local rel_dir="${FE_RELEASE_APP_DIRS[${base}]:-}"
-  local app_dir release_script network
+  local kind="${FE_RELEASE_KIND[${base}]:-next}"
+  local app_dir release_script script_name network
 
   [ -n "${rel_dir}" ] || return 0
 
@@ -304,8 +312,14 @@ build_fe_release() {
     return 0
   fi
 
+  if [ "${kind}" = "vite" ]; then
+    script_name="vite-release.sh"
+  else
+    script_name="next-release.sh"
+  fi
+
   app_dir="${COMPOSE_ROOT}/${rel_dir}"
-  release_script="${COMPOSE_ROOT}/${FE_RELEASE_SCRIPT}"
+  release_script="${COMPOSE_ROOT}/bin/${script_name}"
   if [ ! -d "${app_dir}" ]; then
     echo "fe-release: ${app_dir} 가 없습니다." >&2
     return 1
@@ -326,10 +340,10 @@ build_fe_release() {
     --network "${network}" \
     -v "${app_dir}:/usr/src/app" \
     -v "${COMPOSE_ROOT}/.hihing-deploy-profile:/usr/src/app/.hihing-deploy-profile:ro" \
-    -v "${release_script}:/opt/hihing/next-release.sh:ro" \
+    -v "${release_script}:/opt/hihing/${script_name}:ro" \
     -w /usr/src/app \
     -e NODE_ENV=production \
-    node22-ffmpeg sh /opt/hihing/next-release.sh build >/dev/null
+    node22-ffmpeg sh "/opt/hihing/${script_name}" build >/dev/null
 }
 
 resolve_container_ref() {
@@ -602,10 +616,12 @@ service_dirs = {
     "hihing-platform-api-2": "hihing-platform-api",
     "tv_frontend-1": "hihing-i-services/tv_frontend",
     "tv_frontend-2": "hihing-i-services/tv_frontend",
-    "hihing-i-admin": "hihing-i-services/hihing-i-admin",
+    "hihing-i-admin-1": "hihing-i-services/hihing-i-admin",
+    "hihing-i-admin-2": "hihing-i-services/hihing-i-admin",
     "square-web-1": "hihing-o-services/square-web",
     "square-web-2": "hihing-o-services/square-web",
-    "square-admin": "hihing-o-services/square-admin",
+    "square-admin-1": "hihing-o-services/square-admin",
+    "square-admin-2": "hihing-o-services/square-admin",
     "hihing-chatbot": "hihing-o-services/hihing-chatbot",
     "market_backend": "market_backend",
     "market_admin": "market_admin",
@@ -689,6 +705,8 @@ append_service_group() {
     # 이중화 이후에도 기존 서비스명을 그대로 쓸 수 있게 짝으로 펼친다.
     tv_frontend) printf '%s\n' tv_frontend-1 tv_frontend-2 ;;
     square-web) printf '%s\n' square-web-1 square-web-2 ;;
+    hihing-i-admin|i-admin) printf '%s\n' hihing-i-admin-1 hihing-i-admin-2 ;;
+    square-admin) printf '%s\n' square-admin-1 square-admin-2 ;;
     *) printf '%s\n' "${target}" ;;
   esac
 }

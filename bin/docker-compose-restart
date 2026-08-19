@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # Uses `up -d --force-recreate --remove-orphans` instead of `restart`
 # so .env / overlay changes are applied. Pass --rebuild to also rebuild images.
-# `-1`/`-2` 로 이중화된 서비스(platform / i-bff / o-bff)는 기본이 롤링이다.
+# `-1`/`-2` 로 이중화된 서비스(platform / i-bff / o-bff / FE·admin)는 기본이 롤링이다.
 # 한 대씩 재생성하고 healthy 를 확인한 뒤 다음 대로 넘어가며, 첫 대가 살아나지
 # 못하면 중단한다. 동시 재생성이 필요하면 --no-rolling.
 # dev/prod is always auto-detected from running container compose labels.
