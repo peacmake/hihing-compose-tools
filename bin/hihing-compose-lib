@@ -32,15 +32,16 @@ usage: docker-compose-up [dev|prod] [--log-level LEVEL] [--rebuild] [--no-rollin
 
   서비스 미지정 시 docker-compose.yml + docker-compose.{dev|prod}.yml 병합 결과의 전체 서비스 대상
   축약어: platform / i-bff / o-bff
-  이중화 FE: tv_frontend / square-web / hihing-i-admin / square-admin / common-web 도 짝(-1/-2)으로 펼침
+  platform 은 hihing-platform-api-1~4. 그 외 이중화는 짝(-1/-2)으로 펼침
+  이중화 FE: tv_frontend / square-web / hihing-i-admin / square-admin / common-web
 
   기본 up 플래그: -d --force-recreate --remove-orphans
   --rebuild           이미지 리빌드 추가 (--build). Dockerfile/의존성 변경 시에만 사용
                       코드 변경은 롤링 전 릴리스 선빌드가 반영한다. 기동 명령은 포인터만 serve 한다.
 
-  롤링: `<base>-1` `<base>-2` 가 함께 지정되면(platform / i-bff / o-bff 축약어 포함)
-        한 대씩 재생성하고 healthy 확인 후 다음 대로 넘어간다.
-        첫 대가 살아나지 못하면 두 번째는 건드리지 않고 중단한다.
+  롤링: 같은 base 의 `-N` 이 둘 이상 지정되면(platform 은 1~4, i-bff / o-bff 는 1~2)
+        번호 순으로 한 대씩 재생성하고 healthy 확인 후 다음 대로 넘어간다.
+        앞 대가 살아나지 못하면 이후 인스턴스는 건드리지 않고 중단한다.
   --no-rolling        롤링을 끄고 두 대를 동시에 재생성 (순단 발생, 긴급 복구용)
   HIHING_ROLLING_TIMEOUT  인스턴스당 준비 대기 한계(초, 기본 300)
 
@@ -81,7 +82,7 @@ usage_compose_target() {
   echo "usage: $1 [--rebuild] [--no-rolling] [platform|i-bff|o-bff|<compose-service> ...]" >&2
   echo "  축약어: platform / i-bff / o-bff 만. 미지정 시 docker-compose.yml 전체 서비스" >&2
   echo "  --rebuild: 이미지 리빌드(--build) 포함. 코드 반영은 롤링 전 릴리스 선빌드" >&2
-  echo "  이중화 서비스(-1/-2)는 기본이 롤링: 한 대씩 재생성하고 healthy 확인 후 다음 대" >&2
+  echo "  이중화 서비스는 기본이 롤링: platform 은 1~4, 그 외는 -1/-2. 한 대씩 재생성하고 healthy 확인 후 다음 대" >&2
   echo "  --no-rolling: 두 대 동시 재생성 (순단 발생, 긴급 복구용)" >&2
   echo "  lifecycle 명령은 docker-compose.yml + 존재하는 dev/prod overlay 를 병합해 실행" >&2
 }
@@ -419,16 +420,14 @@ wait_for_service_ready() {
 
 declare -a ALL_COMPOSE_SERVICES=()
 
-# compose 정의에 `<base>-1` 과 `<base>-2` 가 모두 있으면 짝으로 본다.
-# 요청 목록이 아니라 compose 정의 기준이라, 한쪽만 지정해도 짝인지 판별된다.
+# compose 정의에 같은 `<base>-N` 형제가 있으면 복제 서비스로 본다.
+# 요청 목록이 아니라 compose 정의 기준이라, 한쪽만 지정해도 복제인지 판별된다.
 is_paired_service() {
   local service="${1:-}"
-  local base index partner
+  local base
 
-  [[ "${service}" =~ ^(.+)-([12])$ ]] || return 1
+  [[ "${service}" =~ ^(.+)-([0-9]+)$ ]] || return 1
   base="${BASH_REMATCH[1]}"
-  index="${BASH_REMATCH[2]}"
-  if [ "${index}" = "1" ]; then partner="${base}-2"; else partner="${base}-1"; fi
 
   if [ "${#ALL_COMPOSE_SERVICES[@]}" -eq 0 ]; then
     mapfile -t ALL_COMPOSE_SERVICES < <(list_all_compose_services)
@@ -436,7 +435,7 @@ is_paired_service() {
 
   local candidate
   for candidate in "${ALL_COMPOSE_SERVICES[@]}"; do
-    if [ "${candidate}" = "${partner}" ]; then
+    if [ "${candidate}" != "${service}" ] && [[ "${candidate}" =~ ^${base}-[0-9]+$ ]]; then
       return 0
     fi
   done
@@ -451,12 +450,15 @@ compose_up_services_rolling() {
   shift || true
   local -a targets=("$@")
   local -a services=()
-  local -A requested=()
   local -a rolling_bases=()
   local -a paired_singles=()
   local -a singles=()
-  local service base index partner member
+  local service base index member
   local rolling_status=0
+  local -A replica_indexes=()
+  local -a replica_bases_order=()
+  local -a idxs=()
+  local -a members=()
 
   if [ "${#targets[@]}" -eq 0 ]; then
     compose_up_services "${mode}"
@@ -472,26 +474,33 @@ compose_up_services_rolling() {
   mapfile -t services < <(resolve_services "${targets[@]}")
 
   for service in "${services[@]}"; do
-    requested["${service}"]=1
-  done
-
-  for service in "${services[@]}"; do
-    if [[ "${service}" =~ ^(.+)-([12])$ ]]; then
+    if [[ "${service}" =~ ^(.+)-([0-9]+)$ ]]; then
+      # is_paired_service 가 =~ 를 다시 써서 BASH_REMATCH 를 덮어쓴다.
       base="${BASH_REMATCH[1]}"
       index="${BASH_REMATCH[2]}"
-      if [ "${index}" = "1" ]; then partner="${base}-2"; else partner="${base}-1"; fi
-      if [ -n "${requested[${partner}]+x}" ]; then
-        if [ "${index}" = "1" ]; then
-          rolling_bases+=("${base}")
-        fi
-        continue
-      fi
       if is_paired_service "${service}"; then
-        paired_singles+=("${service}")
+        if [ -z "${replica_indexes[${base}]+x}" ]; then
+          replica_bases_order+=("${base}")
+          replica_indexes["${base}"]="${index}"
+        else
+          case " ${replica_indexes[${base}]} " in
+            *" ${index} "*) ;;
+            *) replica_indexes["${base}"]="${replica_indexes[${base}]} ${index}" ;;
+          esac
+        fi
         continue
       fi
     fi
     singles+=("${service}")
+  done
+
+  for base in "${replica_bases_order[@]}"; do
+    read -r -a idxs <<< "${replica_indexes[${base}]}"
+    if [ "${#idxs[@]}" -ge 2 ]; then
+      rolling_bases+=("${base}")
+    else
+      paired_singles+=("${base}-${idxs[0]}")
+    fi
   done
 
   if [ "${#singles[@]}" -gt 0 ]; then
@@ -508,7 +517,7 @@ compose_up_services_rolling() {
 
   local -A single_build=()
   for service in "${paired_singles[@]}"; do
-    [[ "${service}" =~ ^(.+)-[12]$ ]] || continue
+    [[ "${service}" =~ ^(.+)-[0-9]+$ ]] || continue
     base="${BASH_REMATCH[1]}"
     if [ -n "${single_build[${base}]+x}" ]; then
       continue
@@ -523,7 +532,7 @@ compose_up_services_rolling() {
   done
 
   for service in "${paired_singles[@]}"; do
-    [[ "${service}" =~ ^(.+)-[12]$ ]] || continue
+    [[ "${service}" =~ ^(.+)-[0-9]+$ ]] || continue
     base="${BASH_REMATCH[1]}"
     if [ "${single_build[${base}]:-}" != "ok" ]; then
       continue
@@ -543,8 +552,9 @@ compose_up_services_rolling() {
       rolling_status=1
       continue
     fi
-    echo "rolling: ${base}-1 → ${base}-2 (한 대씩 재생성 후 준비 확인)" >&2
-    for member in "${base}-1" "${base}-2"; do
+    mapfile -t members < <(printf '%s\n' ${replica_indexes[${base}]} | sort -n | while read -r idx; do printf '%s\n' "${base}-${idx}"; done)
+    echo "rolling: $(printf '%s → ' "${members[@]}" | sed 's/ → $//') (한 대씩 재생성 후 준비 확인)" >&2
+    for member in "${members[@]}"; do
       compose_up_services "${mode}" "${member}"
       if ! wait_for_service_ready "${member}"; then
         echo "rolling 중단: ${member} 가 정상화되지 않았습니다. 이후 인스턴스는 재생성하지 않습니다." >&2
@@ -655,6 +665,8 @@ service_dirs = {
     "hihing-o-bff-2": "hihing-o-services/bff",
     "hihing-platform-api-1": "hihing-platform-api",
     "hihing-platform-api-2": "hihing-platform-api",
+    "hihing-platform-api-3": "hihing-platform-api",
+    "hihing-platform-api-4": "hihing-platform-api",
     "tv_frontend-1": "hihing-i-services/tv_frontend",
     "tv_frontend-2": "hihing-i-services/tv_frontend",
     "hihing-i-admin-1": "hihing-i-services/hihing-i-admin",
@@ -744,7 +756,7 @@ PY
 append_service_group() {
   local target="$1"
   case "${target}" in
-    platform) printf '%s\n' hihing-platform-api-1 hihing-platform-api-2 ;;
+    platform) printf '%s\n' hihing-platform-api-1 hihing-platform-api-2 hihing-platform-api-3 hihing-platform-api-4 ;;
     i-bff) printf '%s\n' hihing-i-bff-1 hihing-i-bff-2 ;;
     o-bff) printf '%s\n' hihing-o-bff-1 hihing-o-bff-2 ;;
     # 이중화 이후에도 기존 서비스명을 그대로 쓸 수 있게 짝으로 펼친다.
