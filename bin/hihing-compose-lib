@@ -351,14 +351,29 @@ build_fe_release() {
   fi
 
   echo "release: ${base} 새 릴리스 빌드 시작 (서빙 중인 컨테이너는 유지)" >&2
-  docker run --rm \
-    --network "${network}" \
-    -v "${app_dir}:/usr/src/app" \
-    -v "${COMPOSE_ROOT}/.hihing-deploy-profile:/usr/src/app/.hihing-deploy-profile:ro" \
-    -v "${release_script}:/opt/hihing/${script_name}:ro" \
-    -w /usr/src/app \
-    -e NODE_ENV=production \
-    node22-ffmpeg sh "/opt/hihing/${script_name}" build >/dev/null
+  # 일회용 빌드는 앱 디렉터리만 마운트한다. 공통 패키지 symlink 가 앱 밖을 보면
+  # 여기에도 같은 경로를 붙여야 `@hihing/subscription-ui` 를 찾는다.
+  local -a run_cmd=(
+    docker run --rm
+    --network "${network}"
+    -v "${app_dir}:/usr/src/app"
+    -v "${COMPOSE_ROOT}/.hihing-deploy-profile:/usr/src/app/.hihing-deploy-profile:ro"
+    -v "${release_script}:/opt/hihing/${script_name}:ro"
+  )
+  case "${base}" in
+    square-web)
+      run_cmd+=(-v "${COMPOSE_ROOT}/hihing-i-services/packages/subscription-ui:/usr/src/app/vendor/subscription-ui:ro")
+      ;;
+    tv_frontend)
+      run_cmd+=(-v "${COMPOSE_ROOT}/hihing-i-services/packages:/usr/src/packages:ro")
+      ;;
+  esac
+  run_cmd+=(
+    -w /usr/src/app
+    -e NODE_ENV=production
+    node22-ffmpeg sh "/opt/hihing/${script_name}" build
+  )
+  "${run_cmd[@]}" >/dev/null
 }
 
 resolve_container_ref() {
