@@ -13,6 +13,8 @@ set -euo pipefail
 # 못하면 중단한다. 동시 재생성이 필요하면 --no-rolling.
 # dev/prod is always auto-detected from running container compose labels.
 # LOG_LEVEL env (or docker-compose-up --log-level) applies on recreate via compose_up_services.
+# 빌드·재기동은 각 저장소의 현재 브랜치 HEAD 만 사용한다. 미커밋 변경은 잠시 치웠다가
+# 재기동이 끝나면(실패해도) 다시 미커밋 상태로 되돌린다. 브랜치는 바꾸지 않는다.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/hihing-compose-lib"

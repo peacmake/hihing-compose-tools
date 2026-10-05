@@ -584,6 +584,162 @@ compose_up_services_rolling() {
   return "${rolling_status}"
 }
 
+# 릴리스 선빌드와 볼륨 마운트는 워킹트리를 그대로 읽는다.
+# 재기동 동안만 현재 브랜치의 HEAD 로 맞추고, 끝나면 미커밋 변경을 되돌린다.
+declare -A COMPOSE_EXTRA_SOURCE_DIRS=(
+  [market_backend]="market_backend"
+  [market_admin]="market_admin"
+)
+# square-web 빌드는 i-services 의 subscription-ui 를 함께 마운트한다.
+declare -A COMPOSE_LINKED_SOURCE_DIRS=(
+  [square-web]="hihing-i-services"
+)
+declare -a HIHING_HELD_REPOS=()
+declare -a HIHING_HELD_STASHES=()
+
+compose_service_base() {
+  local service="$1"
+  if [[ "${service}" =~ ^(.+)-[0-9]+$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  printf '%s\n' "${service}"
+}
+
+remember_repo_toplevel() {
+  local dir="$1"
+  local repo
+  [ -d "${dir}" ] || return 0
+  repo="$(git -C "${dir}" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "${repo}" ] || return 0
+  if [ -z "${HIHING_REPO_SEEN[${repo}]+x}" ]; then
+    HIHING_REPO_SEEN["${repo}"]=1
+    HIHING_REPO_LIST+=("${repo}")
+  fi
+}
+
+hold_one_repo() {
+  local repo="$1"
+  local git_path branch short
+
+  git_path="$(git -C "${repo}" rev-parse --git-path .)"
+  if [ -d "${git_path}/rebase-merge" ] || [ -d "${git_path}/rebase-apply" ] || [ -f "${git_path}/MERGE_HEAD" ] || [ -f "${git_path}/CHERRY_PICK_HEAD" ]; then
+    echo "중단: ${repo} 에서 머지/리베이스가 진행 중이라 커밋된 트리만으로 재기동할 수 없습니다." >&2
+    return 1
+  fi
+
+  branch="$(git -C "${repo}" branch --show-current)"
+  short="$(git -C "${repo}" rev-parse --short HEAD)"
+  if [ -z "${branch}" ]; then
+    branch="(detached HEAD)"
+  fi
+
+  if [ -z "$(git -C "${repo}" status --porcelain)" ]; then
+    echo "커밋된 트리로 재기동: ${repo} (${branch} @ ${short})" >&2
+    return 0
+  fi
+
+  echo "미커밋 변경은 빌드에서 제외합니다: ${repo} (${branch} @ ${short})" >&2
+  git -C "${repo}" stash push --include-untracked -m "hihing-compose-restart ${branch} @ ${short}"
+  HIHING_HELD_REPOS+=("${repo}")
+  HIHING_HELD_STASHES+=("$(git -C "${repo}" rev-parse refs/stash)")
+}
+
+hold_committed_checkouts() {
+  local -a services=("$@")
+  local service base rel
+  declare -gA HIHING_REPO_SEEN=()
+  declare -ga HIHING_REPO_LIST=()
+  local repo
+
+  trap 'release_held_working_trees' EXIT
+
+  for service in "${services[@]}"; do
+    base="$(compose_service_base "${service}")"
+    rel="${FE_RELEASE_APP_DIRS[${base}]:-${COMPOSE_EXTRA_SOURCE_DIRS[${base}]:-}}"
+    if [ -n "${rel}" ]; then
+      remember_repo_toplevel "${COMPOSE_ROOT}/${rel}"
+    fi
+    rel="${COMPOSE_LINKED_SOURCE_DIRS[${base}]:-}"
+    if [ -n "${rel}" ]; then
+      remember_repo_toplevel "${COMPOSE_ROOT}/${rel}"
+    fi
+  done
+
+  for repo in "${HIHING_REPO_LIST[@]}"; do
+    hold_one_repo "${repo}"
+  done
+}
+
+restore_one_held_repo() {
+  local repo="$1"
+  local sha="$2"
+  local top ref
+
+  top="$(git -C "${repo}" rev-parse -q --verify refs/stash || true)"
+  if [ "${top}" = "${sha}" ]; then
+    ref="stash@{0}"
+  else
+    ref="$(git -C "${repo}" stash list --format='%gd %H' | awk -v sha="${sha}" '$2 == sha { print $1; exit }')"
+  fi
+  if [ -z "${ref}" ]; then
+    echo "경고: 치워 둔 미커밋 변경을 찾지 못했습니다: ${repo} (${sha})" >&2
+    return 1
+  fi
+
+  if git -C "${repo}" stash apply --index "${ref}"; then
+    git -C "${repo}" stash drop "${ref}"
+    echo "미커밋 변경을 되돌렸습니다: ${repo}" >&2
+    return 0
+  fi
+
+  git -C "${repo}" reset --hard HEAD >/dev/null
+  git -C "${repo}" clean -fd >/dev/null
+  if git -C "${repo}" stash apply --index "${ref}"; then
+    git -C "${repo}" stash drop "${ref}"
+    echo "미커밋 변경을 되돌렸습니다: ${repo}" >&2
+    return 0
+  fi
+
+  if git -C "${repo}" stash apply "${ref}"; then
+    git -C "${repo}" stash drop "${ref}"
+    echo "경고: staged 구분 없이 워킹트리만 복구했습니다: ${repo}" >&2
+    return 0
+  fi
+
+  echo "경고: 미커밋 변경 복구가 충돌했습니다. stash 를 유지합니다: ${repo} (${ref})" >&2
+  return 1
+}
+
+release_held_working_trees() {
+  local rc=$?
+  local i repo sha failed=0
+  local -a repos=()
+  local -a shas=()
+
+  if [ "${#HIHING_HELD_REPOS[@]}" -eq 0 ]; then
+    return "${rc}"
+  fi
+
+  repos=("${HIHING_HELD_REPOS[@]}")
+  shas=("${HIHING_HELD_STASHES[@]}")
+  HIHING_HELD_REPOS=()
+  HIHING_HELD_STASHES=()
+
+  for ((i=${#repos[@]}-1; i>=0; i--)); do
+    repo="${repos[$i]}"
+    sha="${shas[$i]}"
+    if ! restore_one_held_repo "${repo}" "${sha}"; then
+      failed=1
+    fi
+  done
+
+  if [ "${failed}" -ne 0 ] && [ "${rc}" -eq 0 ]; then
+    rc=1
+  fi
+  return "${rc}"
+}
+
 recreate_services_with_mode_detection() {
   local -a targets=("$@")
   local -a services=()
@@ -602,6 +758,8 @@ recreate_services_with_mode_detection() {
     echo "재생성할 서비스가 없습니다." >&2
     return 1
   fi
+
+  hold_committed_checkouts "${services[@]}"
 
   for service in "${services[@]}"; do
     mode="$(detect_service_compose_mode "${service}")"
