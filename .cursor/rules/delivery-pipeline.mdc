@@ -10,12 +10,12 @@ alwaysApply: true
 1. 로컬 수정
 2. 검증 (그 변경의 테스트·타입·화면). 통과 전에 커밋하지 않는다.
 3. 깃 커밋. 그 작업 파일만. `.env`·시크릿·원본 영상·`vendor/` 바이너리 금지. `push --force`·`reset` 금지.
-4. 스테이징 배포, 재기동. 그 커밋을 원격에 올린 뒤 HS에서 `hs-sync <별칭>`(ff-only). 바뀐 서비스만 `docker-compose-restart`. 시작이면 `docker-compose-up prod --log-level log,debug <서비스>`. 전체 일괄 금지. 스테이징에서 `dp-*` 금지.
+4. 스테이징 배포, 재기동. 스테이징 서버 `dev-api-hsmaster`에 들어가 `hs-sync <별칭>`으로 받은 뒤 바뀐 서비스를 `dcr <서비스>`로 재기동한다. `dcr`은 `docker-compose-restart`다. 시작이면 `docker-compose-up prod --log-level log,debug <서비스>`. 전체 일괄 금지.
 5. 스테이징 검증 (헬스·로그·API 또는 화면)
-6. 운영 배포, 재기동. 바뀐 서비스만. platform `dp-platform`. 히힝ON `sudo o-docker-dp restart hihing-o-bff|square-admin|square-web`. 내부는 그 레포의 `dp-*`.
+6. 운영 배포, 재기동. 같은 스테이징 서버에서 `dp-*`를 실행한다. 이 명령이 운영을 배포하고 롤링 재기동한다. 바뀐 것만. `dp-platform`, `dp-i-bff`, `dp-tv-frontend`, `dp-i-admin`, `dp-o-bff`, `dp-on-web`, `dp-on-admin`, `dp-chatbot`.
 7. 운영 검증
-8. 깃 푸시. 4에서 이미 그 커밋을 원격에 올렸으면 원격이 그 커밋인지 확인하고 끝낸다. 없으면 그때 푸시한다.
+8. 깃 푸시. 원격이 그 커밋이 아니면 푸시한다.
 
-`hs-sync`는 GitHub fast-forward만 받는다. 문서·규칙만 바뀌고 서버 프로세스가 없으면 재기동할 서비스가 없다. 커밋과 푸시는 한다. `tv-cliper`처럼 서버에 올리지 않는 앱은 1–3과 푸시만 한다.
+`tv-cliper`처럼 서버에 올리지 않는 앱은 1–3과 푸시만 한다.
 
 원문: `hihing-architecture-docs/AGENTS.md` §0.
