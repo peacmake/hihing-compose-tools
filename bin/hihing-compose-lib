@@ -200,9 +200,15 @@ detect_service_compose_mode() {
 # docker compose up 공통 플래그.
 # 기본: recreate (+ orphan 정리). HIHING_COMPOSE_REBUILD=1 이면 --build 추가.
 compose_up_default_args() {
-  local -a args=(-d --force-recreate --remove-orphans)
+  local -a args=(-d --force-recreate)
+  if [ "${HIHING_COMPOSE_KEEP_ORPHANS:-0}" != "1" ]; then
+    args+=(--remove-orphans)
+  fi
   if [ "${HIHING_COMPOSE_REBUILD:-0}" = "1" ]; then
-    args=(-d --build --force-recreate --remove-orphans)
+    args=(-d --build --force-recreate)
+    if [ "${HIHING_COMPOSE_KEEP_ORPHANS:-0}" != "1" ]; then
+      args+=(--remove-orphans)
+    fi
   fi
   # 롤링 중에는 의존 서비스까지 --force-recreate 되지 않도록 막는다.
   # `<base>-2` 는 `<base>-1` 에 depends_on 이 걸려 있어, --no-deps 없이 2번을
@@ -850,7 +856,8 @@ service_dirs = {
     "square-web-2": "hihing-o-services/square-web",
     "square-admin-1": "hihing-o-services/square-admin",
     "square-admin-2": "hihing-o-services/square-admin",
-    "hihing-chatbot": "hihing-o-services/hihing-chatbot",
+    "hihing-chatbot-1": "hihing-o-services/hihing-chatbot",
+    "hihing-chatbot-2": "hihing-o-services/hihing-chatbot",
     "market_backend": "market_backend",
     "market_admin": "market_admin",
 }
@@ -938,6 +945,7 @@ append_service_group() {
     hihing-i-admin|i-admin) printf '%s\n' hihing-i-admin-1 hihing-i-admin-2 ;;
     square-admin) printf '%s\n' square-admin-1 square-admin-2 ;;
     common-web) printf '%s\n' common-web-1 common-web-2 ;;
+    hihing-chatbot|hihing-chat) printf '%s\n' hihing-chatbot-1 hihing-chatbot-2 ;;
     *) printf '%s\n' "${target}" ;;
   esac
 }
