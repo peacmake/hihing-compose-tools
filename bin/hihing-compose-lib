@@ -318,6 +318,92 @@ resolve_hihing_network() {
   docker network ls --filter name=_hihing_network --format '{{.Name}}' 2>/dev/null | head -n1
 }
 
+# 공유 작업 트리를 체크아웃하지 않고 origin/<ref> 의 앱 디렉터리만 빌드한다.
+# 릴리스 디렉터리와 포인터만 라이브 앱에 남긴다.
+build_fe_release_from_ref() {
+  local base="$1"
+  local ref="$2"
+  local app_dir="$3"
+  local kind="$4"
+  local script_name="$5"
+  local release_script="$6"
+  local network="$7"
+  local repo prefix staging releases_dir pointer_name marker short
+  local build_out id status=0
+
+  repo="$(git -c "safe.directory=${app_dir}" -C "${app_dir}" rev-parse --show-toplevel)"
+  prefix="$(realpath --relative-to="${repo}" "${app_dir}")"
+
+  if [ "$(id -u)" -eq 0 ]; then
+    runuser -u hsmaster -- git -c "safe.directory=${repo}" -C "${repo}" fetch --prune origin \
+      "refs/heads/${ref}:refs/remotes/origin/${ref}" \
+      || echo "release: origin/${ref} fetch 실패. 이미 받아 둔 커밋으로 빌드합니다." >&2
+  else
+    git -c "safe.directory=${repo}" -C "${repo}" fetch --prune origin \
+      "refs/heads/${ref}:refs/remotes/origin/${ref}" \
+      || echo "release: origin/${ref} fetch 실패. 이미 받아 둔 커밋으로 빌드합니다." >&2
+  fi
+
+  if ! git -c "safe.directory=${repo}" -C "${repo}" rev-parse --verify --quiet "refs/remotes/origin/${ref}" >/dev/null; then
+    echo "release: origin/${ref} 가 없습니다." >&2
+    return 1
+  fi
+
+  case "${kind}" in
+    nest) releases_dir=".nest-releases"; pointer_name=".nest-release"; marker="main.js" ;;
+    vite) releases_dir=".vite-releases"; pointer_name=".vite-release"; marker="index.html" ;;
+    *) releases_dir=".next-releases"; pointer_name=".next-release"; marker="BUILD_ID" ;;
+  esac
+
+  if [ ! -d "${app_dir}/node_modules" ]; then
+    echo "release: ${app_dir}/node_modules 가 없습니다." >&2
+    return 1
+  fi
+  mkdir -p "${app_dir}/${releases_dir}"
+
+  staging="$(mktemp -d "/tmp/hihing-${base}-src.XXXXXX")"
+  git -c "safe.directory=${repo}" -C "${repo}" archive "origin/${ref}:${prefix}" | tar -x -C "${staging}"
+  short="$(git -c "safe.directory=${repo}" -C "${repo}" rev-parse --short "origin/${ref}")"
+  echo "release: ${base} 를 origin/${ref} @ ${short} 에서 빌드합니다 (작업 트리 브랜치는 유지)" >&2
+
+  set +e
+  build_out="$(
+    docker run --rm \
+      --network "${network}" \
+      -v "${staging}:/usr/src/app" \
+      -v "${app_dir}/node_modules:/usr/src/app/node_modules" \
+      -v "${app_dir}/${releases_dir}:/usr/src/app/${releases_dir}" \
+      -v "${COMPOSE_ROOT}/.hihing-deploy-profile:/usr/src/app/.hihing-deploy-profile:ro" \
+      -v "${release_script}:/opt/hihing/${script_name}:ro" \
+      -w /usr/src/app \
+      -e NODE_ENV=production \
+      node22-ffmpeg sh "/opt/hihing/${script_name}" build
+  )"
+  status=$?
+  set -e
+  rm -rf "${staging}"
+
+  if [ "${status}" -ne 0 ]; then
+    echo "release: ${base} origin/${ref} 빌드가 실패했습니다. 기존 포인터를 유지합니다." >&2
+    return 1
+  fi
+
+  id="$(printf '%s\n' "${build_out}" | awk 'NF { line=$0 } END { print line }')"
+  id="$(basename "${id}")"
+  if [ -z "${id}" ] || [ ! -f "${app_dir}/${releases_dir}/${id}/${marker}" ]; then
+    echo "release: ${base} 빌드 산출물(${id})을 확인하지 못했습니다. 기존 포인터를 유지합니다." >&2
+    return 1
+  fi
+  if [ "${kind}" = "nest" ] && [ ! -f "${app_dir}/${releases_dir}/${id}/.build-complete" ]; then
+    echo "release: ${base} .build-complete 가 없습니다. 기존 포인터를 유지합니다." >&2
+    return 1
+  fi
+
+  printf '%s' "${id}" > "${app_dir}/${pointer_name}.tmp"
+  mv -f "${app_dir}/${pointer_name}.tmp" "${app_dir}/${pointer_name}"
+  echo "release: ${base} 포인터 전환 ${id} (origin/${ref} @ ${short})" >&2
+}
+
 build_fe_release() {
   local base="${1:-}"
   local rel_dir="${FE_RELEASE_APP_DIRS[${base}]:-}"
@@ -354,6 +440,19 @@ build_fe_release() {
   if [ -z "${network}" ]; then
     echo "release: hihing 네트워크를 찾지 못했습니다." >&2
     return 1
+  fi
+
+  # 스테이징 작업 트리는 master 로 유지한다. 업체 브랜치가 master 에 없으면
+  # COMPOSE_ROOT/.hihing-staging-source/<서비스> 에 브랜치명을 적는다.
+  # o-docker-control restart 가 그 스냅샷을 빌드해, 공유 트리를 바꾸지 않고도 반영된다.
+  local staging_ref=""
+  local staging_ref_file="${COMPOSE_ROOT}/.hihing-staging-source/${base}"
+  if [ -f "${staging_ref_file}" ]; then
+    staging_ref="$(tr -d '[:space:]' < "${staging_ref_file}")"
+  fi
+  if [ -n "${staging_ref}" ]; then
+    build_fe_release_from_ref "${base}" "${staging_ref}" "${app_dir}" "${kind}" "${script_name}" "${release_script}" "${network}"
+    return $?
   fi
 
   echo "release: ${base} 새 릴리스 빌드 시작 (서빙 중인 컨테이너는 유지)" >&2
@@ -657,6 +756,12 @@ hold_committed_checkouts() {
   declare -gA HIHING_REPO_SEEN=()
   declare -ga HIHING_REPO_LIST=()
   local repo
+
+  # o-docker-control 은 업체가 체크아웃·저장한 워킹트리를 그대로 빌드한다.
+  if [ "${HIHING_COMPOSE_INCLUDE_WORKDIR:-0}" = "1" ]; then
+    echo "워킹트리를 그대로 빌드합니다. 현재 체크아웃과 저장하지 않은 변경이 릴리스에 들어갑니다." >&2
+    return 0
+  fi
 
   trap 'release_held_working_trees' EXIT
 
