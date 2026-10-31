@@ -328,8 +328,9 @@ build_fe_release_from_ref() {
   local script_name="$5"
   local release_script="$6"
   local network="$7"
-  local repo prefix staging releases_dir pointer_name marker short
+  local repo prefix staging releases_dir pointer_name marker short revision linked_repo linked_short linked_revision
   local build_out id status=0
+  local -a build_mounts=()
 
   repo="$(git -c "safe.directory=${app_dir}" -C "${app_dir}" rev-parse --show-toplevel)"
   prefix="$(realpath --relative-to="${repo}" "${app_dir}")"
@@ -337,17 +338,18 @@ build_fe_release_from_ref() {
   if [ "$(id -u)" -eq 0 ]; then
     runuser -u hsmaster -- git -c "safe.directory=${repo}" -C "${repo}" fetch --prune origin \
       "refs/heads/${ref}:refs/remotes/origin/${ref}" \
-      || echo "release: origin/${ref} fetch 실패. 이미 받아 둔 커밋으로 빌드합니다." >&2
+      || { if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ]; then echo "release: origin/${ref} fetch 실패. 배포 중단." >&2; return 1; else echo "release: origin/${ref} fetch 실패. 기존 ref를 사용합니다." >&2; fi; }
   else
     git -c "safe.directory=${repo}" -C "${repo}" fetch --prune origin \
       "refs/heads/${ref}:refs/remotes/origin/${ref}" \
-      || echo "release: origin/${ref} fetch 실패. 이미 받아 둔 커밋으로 빌드합니다." >&2
+      || { if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ]; then echo "release: origin/${ref} fetch 실패. 배포 중단." >&2; return 1; else echo "release: origin/${ref} fetch 실패. 기존 ref를 사용합니다." >&2; fi; }
   fi
 
   if ! git -c "safe.directory=${repo}" -C "${repo}" rev-parse --verify --quiet "refs/remotes/origin/${ref}" >/dev/null; then
     echo "release: origin/${ref} 가 없습니다." >&2
     return 1
   fi
+  revision="$(git -c "safe.directory=${repo}" -C "${repo}" rev-parse "refs/remotes/origin/${ref}^{commit}")"
 
   case "${kind}" in
     nest) releases_dir=".nest-releases"; pointer_name=".nest-release"; marker="main.js" ;;
@@ -362,16 +364,48 @@ build_fe_release_from_ref() {
   mkdir -p "${app_dir}/${releases_dir}"
 
   staging="$(mktemp -d "/tmp/hihing-${base}-src.XXXXXX")"
-  git -c "safe.directory=${repo}" -C "${repo}" archive "origin/${ref}:${prefix}" | tar -x -C "${staging}"
-  short="$(git -c "safe.directory=${repo}" -C "${repo}" rev-parse --short "origin/${ref}")"
+  mkdir -p "${staging}/repo"
+  if ! git -c "safe.directory=${repo}" -C "${repo}" archive "${revision}" | tar -x -C "${staging}/repo"; then
+    rm -rf "${staging}"; return 1
+  fi
+  if [ ! -d "${staging}/repo/${prefix}" ]; then
+    echo "release: origin/${ref}에 ${prefix}가 없습니다." >&2
+    rm -rf "${staging}"; return 1
+  fi
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ] && [ -d "${staging}/repo/packages" ]; then
+    build_mounts+=(-v "${staging}/repo/packages:/usr/src/packages:ro")
+  fi
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ] && [[ "${base}" = hihing-o-bff || "${base}" = square-web || "${base}" = square-admin ]]; then
+    local badge_src="${staging}/repo/packages/application-status-badges"
+    [ "${base}" != square-admin ] || badge_src="${staging}/repo/square-admin/vendor/application-status-badges"
+    if [ -d "${badge_src}" ] && [ -d "${app_dir}/node_modules/@hihing/application-status-badges" ]; then
+      build_mounts+=(-v "${badge_src}:/usr/src/app/node_modules/@hihing/application-status-badges:ro")
+    fi
+  fi
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ] && [ "${base}" = square-web ]; then
+    linked_repo="$(git -C "${COMPOSE_ROOT}/hihing-i-services" rev-parse --show-toplevel)"
+    if [ "$(id -u)" -eq 0 ]; then
+      runuser -u hsmaster -- git -c "safe.directory=${linked_repo}" -C "${linked_repo}" fetch origin 'refs/heads/master:refs/remotes/origin/master' || { rm -rf "${staging}"; return 1; }
+    else
+      git -c "safe.directory=${linked_repo}" -C "${linked_repo}" fetch origin 'refs/heads/master:refs/remotes/origin/master' || { rm -rf "${staging}"; return 1; }
+    fi
+    mkdir -p "${staging}/linked"
+    linked_revision="$(git -c "safe.directory=${linked_repo}" -C "${linked_repo}" rev-parse 'refs/remotes/origin/master^{commit}')"
+    git -c "safe.directory=${linked_repo}" -C "${linked_repo}" archive "${linked_revision}:packages/subscription-ui" | tar -x -C "${staging}/linked" || { rm -rf "${staging}"; return 1; }
+    linked_short="${linked_revision:0:12}"
+    echo "release: square-web 연관 subscription-ui origin/master @ ${linked_short}" >&2
+    build_mounts+=(-v "${staging}/linked:/usr/src/app/vendor/subscription-ui:ro")
+  fi
+  short="${revision:0:12}"
   echo "release: ${base} 를 origin/${ref} @ ${short} 에서 빌드합니다 (작업 트리 브랜치는 유지)" >&2
 
   set +e
   build_out="$(
     docker run --rm \
       --network "${network}" \
-      -v "${staging}:/usr/src/app" \
+      -v "${staging}/repo/${prefix}:/usr/src/app" \
       -v "${app_dir}/node_modules:/usr/src/app/node_modules" \
+      "${build_mounts[@]}" \
       -v "${app_dir}/${releases_dir}:/usr/src/app/${releases_dir}" \
       -v "${COMPOSE_ROOT}/.hihing-deploy-profile:/usr/src/app/.hihing-deploy-profile:ro" \
       -v "${release_script}:/opt/hihing/${script_name}:ro" \
@@ -447,7 +481,9 @@ build_fe_release() {
   # o-docker-control restart 가 그 스냅샷을 빌드해, 공유 트리를 바꾸지 않고도 반영된다.
   local staging_ref=""
   local staging_ref_file="${COMPOSE_ROOT}/.hihing-staging-source/${base}"
-  if [ -f "${staging_ref_file}" ]; then
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ]; then
+    staging_ref=master
+  elif [ "${HIHING_STAGING_RESTART_SOURCE:-}" != worktree ] && [ -f "${staging_ref_file}" ]; then
     staging_ref="$(tr -d '[:space:]' < "${staging_ref_file}")"
   fi
   if [ -n "${staging_ref}" ]; then
@@ -473,6 +509,17 @@ build_fe_release() {
       run_cmd+=(-v "${COMPOSE_ROOT}/hihing-i-services/packages:/usr/src/packages:ro")
       ;;
   esac
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = worktree ]; then
+    case "${base}" in
+      hihing-o-bff|square-web|square-admin)
+        local badge_dir="${COMPOSE_ROOT}/hihing-o-services/packages/application-status-badges"
+        [ "${base}" != square-admin ] || badge_dir="${COMPOSE_ROOT}/hihing-o-services/square-admin/vendor/application-status-badges"
+        if [ -d "${badge_dir}" ] && [ -d "${app_dir}/node_modules/@hihing/application-status-badges" ]; then
+          run_cmd+=(-v "${badge_dir}:/usr/src/app/node_modules/@hihing/application-status-badges:ro")
+        fi
+        ;;
+    esac
+  fi
   run_cmd+=(
     -w /usr/src/app
     -e NODE_ENV=production
@@ -715,7 +762,7 @@ remember_repo_toplevel() {
   local dir="$1"
   local repo
   [ -d "${dir}" ] || return 0
-  repo="$(git -C "${dir}" rev-parse --show-toplevel 2>/dev/null || true)"
+  repo="$(git -c safe.directory='*' -C "${dir}" rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "${repo}" ] || return 0
   if [ -z "${HIHING_REPO_SEEN[${repo}]+x}" ]; then
     HIHING_REPO_SEEN["${repo}"]=1
@@ -758,8 +805,23 @@ hold_committed_checkouts() {
   local repo
 
   # o-docker-control 은 업체가 체크아웃·저장한 워킹트리를 그대로 빌드한다.
-  if [ "${HIHING_COMPOSE_INCLUDE_WORKDIR:-0}" = "1" ]; then
-    echo "워킹트리를 그대로 빌드합니다. 현재 체크아웃과 저장하지 않은 변경이 릴리스에 들어갑니다." >&2
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ]; then
+    echo '스테이징 master 모드: 워킹트리와 서비스별 브랜치 선택 파일을 사용하지 않습니다.' >&2
+    return 0
+  fi
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = worktree ] || [ "${HIHING_COMPOSE_INCLUDE_WORKDIR:-0}" = "1" ]; then
+    for service in "${services[@]}"; do
+      base="$(compose_service_base "${service}")"
+      rel="${FE_RELEASE_APP_DIRS[${base}]:-${COMPOSE_EXTRA_SOURCE_DIRS[${base}]:-}}"
+      [ -n "${rel}" ] && remember_repo_toplevel "${COMPOSE_ROOT}/${rel}"
+      rel="${COMPOSE_LINKED_SOURCE_DIRS[${base}]:-}"
+      [ -n "${rel}" ] && remember_repo_toplevel "${COMPOSE_ROOT}/${rel}"
+    done
+    echo '스테이징 작업 트리 모드: 미커밋 파일을 포함합니다.' >&2
+    for repo in "${HIHING_REPO_LIST[@]}"; do
+      echo "소스: ${repo} ($(git -c "safe.directory=${repo}" -C "${repo}" branch --show-current) @ $(git -c "safe.directory=${repo}" -C "${repo}" rev-parse HEAD))" >&2
+      git -c "safe.directory=${repo}" -C "${repo}" status --short >&2
+    done
     return 0
   fi
 
@@ -868,6 +930,21 @@ recreate_services_with_mode_detection() {
   if [ "${#services[@]}" -eq 0 ]; then
     echo "재생성할 서비스가 없습니다." >&2
     return 1
+  fi
+
+  if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ]; then
+    if [ "${HIHING_RELEASE_SKIP_BUILD:-${HIHING_FE_SKIP_BUILD:-0}}" = 1 ]; then
+      echo 'dcr master 모드에서는 빌드를 생략할 수 없습니다.' >&2
+      return 1
+    fi
+    for service in "${services[@]}"; do
+      local base
+      base="$(compose_service_base "${service}")"
+      if [ -z "${FE_RELEASE_APP_DIRS[${base}]:-}" ]; then
+        echo "dcr master 빌드를 지원하지 않는 서비스: ${service}" >&2
+        return 1
+      fi
+    done
   fi
 
   hold_committed_checkouts "${services[@]}"

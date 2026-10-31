@@ -12,6 +12,8 @@ FILES=(
   docker-compose-down
   docker-compose-logs
   docker-compose-restart
+  dcr
+  o-docker-control
   docker-compose-ps
   hihing-compose-lib
   hs-sync
@@ -38,7 +40,7 @@ for file in "${FILES[@]}"; do
   curl -fsSL "${BASE_URL}/${file}" -o "${TMP_DIR}/${file}"
 done
 
-for file in docker-compose-up docker-compose-down docker-compose-logs docker-compose-restart docker-compose-ps hs-sync; do
+for file in docker-compose-up docker-compose-down docker-compose-logs docker-compose-restart dcr o-docker-control docker-compose-ps hs-sync; do
   install -m 755 "${TMP_DIR}/${file}" "${INSTALL_DIR}/${file}"
 done
 

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# 스테이징 최종 검증 전용: 실제 서버 프로필은 restart에서 다시 확인한다.
+export HIHING_STAGING_RESTART_SOURCE=master
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/docker-compose-restart" "$@"

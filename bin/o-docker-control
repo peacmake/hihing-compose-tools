@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# hihing-os 전용: Square 관련 compose 서비스만 up/down/ps/restart/logs 허용.
+# 설치: sudo bash 0_new_architecture_work/install-o-docker-control.sh
+set -euo pipefail
+
+COMPOSE_ROOT="${COMPOSE_ROOT:-/home/hsmaster}"
+
+# ps 기본(서비스 미지정) 시 표시할 compose 서비스명
+PS_ALL_SERVICES=(
+  hihing-o-bff-1
+  hihing-o-bff-2
+  square-web
+  square-admin
+  hihing-chatbot-1
+  hihing-chatbot-2
+)
+
+usage() {
+  cat >&2 <<'EOF'
+usage: o-docker-control up|down|ps|restart|logs|exec <service> [args...]
+
+  service:
+    hihing-o-bff | hihing-o-bff-1 | hihing-o-bff-2
+    square-web | square-web-1 | square-web-2
+    square-admin | square-admin-1 | square-admin-2
+    hihing-chat
+
+  ps      서비스 생략 시 위 5개 전체 상태 표시. 지정 시 해당 서비스만.
+  up      docker-compose-up prod --log-level log,debug <service>  (서비스 필수)
+  down    docker-compose-down <service>  (서비스 필수)
+  restart 스테이징의 현재 체크아웃과 미커밋·미추적 변경을 빌드한 뒤 재기동 (서비스 필수)
+          서비스별 .hihing-staging-source 설정은 사용하지 않는다.
+  logs    docker-compose-logs <service>  (서비스 필수, 기본 --tail=50 -f)
+  exec    docker compose exec <service> [command...]  (서비스 필수, command 생략 시 bash)
+
+  예: sudo o-docker-control ps
+      sudo o-docker-control exec hihing-o-bff bash
+      sudo o-docker-control exec hihing-o-bff-1 npm run migration:run
+EOF
+  exit 1
+}
+
+is_allowed_service() {
+  case "$1" in
+    hihing-o-bff|hihing-o-bff-1|hihing-o-bff-2|square-web|square-web-1|square-web-2|square-admin|square-admin-1|square-admin-2|hihing-chat|hihing-chatbot|hihing-chatbot-1|hihing-chatbot-2)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+compose_target_for() {
+  case "$1" in
+    hihing-o-bff) printf '%s\n' o-bff ;;
+    hihing-o-bff-1|hihing-o-bff-2) printf '%s\n' "$1" ;;
+    hihing-chat|hihing-chatbot) printf '%s\n' hihing-chatbot ;;
+    hihing-chatbot-1|hihing-chatbot-2) printf '%s\n' "$1" ;;
+    square-web|square-web-1|square-web-2) printf '%s\n' "$1" ;;
+    square-admin|square-admin-1|square-admin-2) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+compose_exec_target_for() {
+  case "$1" in
+    hihing-o-bff) printf '%s\n' hihing-o-bff-1 ;;
+    hihing-o-bff-1|hihing-o-bff-2) printf '%s\n' "$1" ;;
+    hihing-chat|hihing-chatbot) printf '%s\n' hihing-chatbot-1 ;;
+    hihing-chatbot-1|hihing-chatbot-2) printf '%s\n' "$1" ;;
+    square-web) printf '%s\n' square-web-1 ;;
+    square-web-1|square-web-2) printf '%s\n' "$1" ;;
+    square-admin) printf '%s\n' square-admin-1 ;;
+    square-admin-1|square-admin-2) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd="${1:-}"
+service="${2:-}"
+
+if [ -z "${cmd}" ]; then
+  usage
+fi
+
+if [ "${cmd}" != "exec" ] && [ "$#" -gt 2 ]; then
+  echo "서비스 이름은 하나만 지정할 수 있습니다." >&2
+  usage
+fi
+
+case "${cmd}" in
+  -h|--help|help)
+    usage
+    ;;
+  up|down|restart|logs|exec)
+    if [ -z "${service}" ]; then
+      echo "${cmd} 명령은 서비스 이름이 필요합니다." >&2
+      usage
+    fi
+    if ! is_allowed_service "${service}"; then
+      echo "허용되지 않은 서비스: ${service}" >&2
+      usage
+    fi
+    ;;
+  ps)
+    if [ -n "${service}" ] && ! is_allowed_service "${service}"; then
+      echo "허용되지 않은 서비스: ${service}" >&2
+      usage
+    fi
+    ;;
+  *)
+    echo "알 수 없는 명령: ${cmd}" >&2
+    usage
+    ;;
+esac
+
+cd "${COMPOSE_ROOT}"
+
+# 업체 재기동은 지금 체크아웃과 저장하지 않은 파일을 빌드한다.
+# dcr의 원격 master 스냅샷 빌드와 구분한다.
+export HIHING_COMPOSE_INCLUDE_WORKDIR=1
+
+case "${cmd}" in
+  up)
+    target="$(compose_target_for "${service}")"
+    docker-compose-up prod --log-level log,debug "${target}"
+    ;;
+  down)
+    target="$(compose_target_for "${service}")"
+    docker-compose-down "${target}"
+    ;;
+  ps)
+    if [ -z "${service}" ]; then
+      docker-compose-ps "${PS_ALL_SERVICES[@]}"
+    else
+      target="$(compose_target_for "${service}")"
+      docker-compose-ps "${target}"
+    fi
+    ;;
+  restart)
+    target="$(compose_target_for "${service}")"
+    export HIHING_COMPOSE_LOG_LEVEL="${HIHING_COMPOSE_LOG_LEVEL:-log,debug}"
+    docker-compose-restart "${target}"
+    ;;
+  logs)
+    target="$(compose_target_for "${service}")"
+    docker-compose-logs "${target}"
+    ;;
+  exec)
+    target="$(compose_exec_target_for "${service}")"
+    shift 2
+    if [ "$#" -eq 0 ]; then
+      set -- bash
+    fi
+    # shellcheck source=/usr/local/bin/hihing-compose-lib
+    source "$(dirname "$0")/hihing-compose-lib"
+    cd "${COMPOSE_ROOT}"
+    if [ -t 0 ] && [ -t 1 ]; then
+      lifecycle_compose exec "${target}" "$@"
+    else
+      lifecycle_compose exec -T "${target}" "$@"
+    fi
+    ;;
+esac
