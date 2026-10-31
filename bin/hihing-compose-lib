@@ -383,7 +383,7 @@ build_fe_release_from_ref() {
     fi
   fi
   if [ "${HIHING_STAGING_RESTART_SOURCE:-}" = master ] && [ "${base}" = square-web ]; then
-    linked_repo="$(git -C "${COMPOSE_ROOT}/hihing-i-services" rev-parse --show-toplevel)"
+    linked_repo="$(git -c safe.directory='*' -C "${COMPOSE_ROOT}/hihing-i-services" rev-parse --show-toplevel)"
     if [ "$(id -u)" -eq 0 ]; then
       runuser -u hsmaster -- git -c "safe.directory=${linked_repo}" -C "${linked_repo}" fetch origin 'refs/heads/master:refs/remotes/origin/master' || { rm -rf "${staging}"; return 1; }
     else
