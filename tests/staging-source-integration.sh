@@ -48,6 +48,20 @@ HIHING_STAGING_RESTART_SOURCE=master build_fe_release hihing-o-bff
 test "$(cat "$tmp/seen-source")" = MASTER
 test ! -e "$tmp/seen-untracked"
 test "$(cat hihing-o-services/bff/.nest-release)" = test-release
+printf 'UNCHANGED' > hihing-o-services/bff/.nest-release
+rm() {
+  if [[ "${PROBE_FAIL_RM:-}" = 1 && "${2:-}" == */hihing-hihing-o-bff-src.* ]]; then
+    printf '%s' "$2" > "$tmp/failed-cleanup-path"
+    return 1
+  fi
+  command rm "$@"
+}
+if PROBE_FAIL_RM=1 HIHING_STAGING_RESTART_SOURCE=master build_fe_release hihing-o-bff; then
+  echo 'FAIL: failed cleanup changed the release' >&2; exit 1
+fi
+test "$(cat hihing-o-services/bff/.nest-release)" = UNCHANGED
+command rm -rf "$(cat "$tmp/failed-cleanup-path")"
+unset -f rm
 mv "$tmp/remote.git" "$tmp/remote-offline.git"
 printf 'UNCHANGED' > hihing-o-services/bff/.nest-release
 if HIHING_STAGING_RESTART_SOURCE=master build_fe_release hihing-o-bff; then

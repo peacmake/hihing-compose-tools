@@ -394,6 +394,11 @@ build_fe_release_from_ref() {
     git -c "safe.directory=${linked_repo}" -C "${linked_repo}" archive "${linked_revision}:packages/subscription-ui" | tar -x -C "${staging}/linked" || { rm -rf "${staging}"; return 1; }
     linked_short="${linked_revision:0:12}"
     echo "release: square-web 연관 subscription-ui origin/master @ ${linked_short}" >&2
+    # Docker가 bind mount 대상 부모를 root 소유로 만들면 빌드 뒤 임시 트리를 지울 수 없다.
+    if ! mkdir -p "${staging}/repo/${prefix}/vendor/subscription-ui"; then
+      echo "release: subscription-ui 마운트 경로 생성 실패." >&2
+      rm -rf "${staging}"; return 1
+    fi
     build_mounts+=(-v "${staging}/linked:/usr/src/app/vendor/subscription-ui:ro")
   fi
   short="${revision:0:12}"
@@ -415,7 +420,10 @@ build_fe_release_from_ref() {
   )"
   status=$?
   set -e
-  rm -rf "${staging}"
+  if ! rm -rf "${staging}"; then
+    echo "release: 임시 소스 정리 실패 (${staging}). 포인터를 전환하지 않습니다." >&2
+    return 1
+  fi
 
   if [ "${status}" -ne 0 ]; then
     echo "release: ${base} origin/${ref} 빌드가 실패했습니다. 기존 포인터를 유지합니다." >&2
